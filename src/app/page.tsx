@@ -814,6 +814,144 @@ export default function Home() {
         onLogout={handleLogout}
       />
 
+      {isCreatePostOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-post-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            background: "rgba(0,0,0,0.62)",
+            display: "grid",
+            placeItems: "center",
+            padding: "24px",
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !isSubmittingPost) {
+              setIsCreatePostOpen(false);
+            }
+          }}
+        >
+          <div
+            className="glass-card"
+            style={{
+              width: "min(560px, 100%)",
+              maxHeight: "min(760px, calc(100vh - 48px))",
+              overflow: "auto",
+              background: "var(--bg-card)",
+              borderRadius: "18px",
+              boxShadow: "var(--shadow-lg)",
+            }}
+          >
+            <div
+              style={{
+                padding: "18px 20px",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "16px",
+              }}
+            >
+              <div>
+                <h2 id="create-post-title" style={{ fontWeight: 900, fontSize: "1.1rem" }}>
+                  Add Reddit post
+                </h2>
+                <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "3px" }}>
+                  Create the post task first, then add comment assignments from the card.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreatePostOpen(false)}
+                disabled={isSubmittingPost}
+                className="btn-ghost"
+                style={{ width: "34px", height: "34px", padding: 0, borderRadius: "50%" }}
+                aria-label="Close create post"
+              >
+                ×
+              </button>
+            </div>
+            <form
+              onSubmit={handleCreatePost}
+              style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}
+            >
+              <Field label="Title">
+                <input
+                  value={postDraft.title}
+                  onChange={(e) =>
+                    setPostDraft((cur) => ({ ...cur, title: e.target.value }))
+                  }
+                  placeholder="Paste the exact Reddit title"
+                  className="input"
+                />
+              </Field>
+              <Field label="Post body">
+                <textarea
+                  value={postDraft.postBody}
+                  onChange={(e) =>
+                    setPostDraft((cur) => ({ ...cur, postBody: e.target.value }))
+                  }
+                  placeholder="Paste the post body here"
+                  className="input"
+                  style={{ minHeight: "140px", resize: "vertical" }}
+                />
+              </Field>
+              <Field label="Subreddit link">
+                <input
+                  value={postDraft.subredditUrl}
+                  onChange={(e) =>
+                    setPostDraft((cur) => ({ ...cur, subredditUrl: e.target.value }))
+                  }
+                  placeholder="https://reddit.com/r/example"
+                  className="input"
+                />
+              </Field>
+              <Field label="Assign post to">
+                <select
+                  value={postDraft.assigneeId}
+                  onChange={(e) =>
+                    setPostDraft((cur) => ({ ...cur, assigneeId: e.target.value }))
+                  }
+                  className="input"
+                >
+                  {team.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {postError && (
+                <div style={{ background: "rgba(255,69,0,0.1)", border: "1px solid rgba(255,69,0,0.3)", borderRadius: "8px", padding: "10px 14px" }}>
+                  <p style={{ fontSize: "0.78rem", fontWeight: 700, color: "#ff7043" }}>{postError}</p>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
+                <button
+                  type="button"
+                  onClick={() => setIsCreatePostOpen(false)}
+                  disabled={isSubmittingPost}
+                  className="btn-ghost"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingPost}
+                  className="btn-primary"
+                  style={{ minWidth: "112px" }}
+                >
+                  {isSubmittingPost ? "Saving..." : "Assign"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Header metrics */}
       <section
         style={{
@@ -875,7 +1013,6 @@ export default function Home() {
       >
         {/* Sidebar */}
         <aside style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {/* Add post form */}
           <div
             style={{
               background: "var(--bg-card)",
@@ -884,103 +1021,82 @@ export default function Home() {
               overflow: "hidden",
             }}
           >
-            <div
-              style={{
-                padding: "14px 18px",
-                borderBottom: "1px solid var(--border)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span
-                  style={{
-                    background: "var(--accent-dim)",
-                    borderRadius: "8px",
-                    padding: "5px 7px",
-                    fontSize: "1rem",
-                  }}
-                >
-                  ✍️
-                </span>
-                <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Add Reddit post</h2>
-              </div>
-              <button
-                form="new-post-form"
-                type="submit"
-                disabled={isSubmittingPost}
-                className="btn-primary"
-                style={{ padding: "7px 16px", fontSize: "0.8rem", opacity: isSubmittingPost ? 0.7 : 1, display: "flex", alignItems: "center", gap: "6px" }}
-              >
-                {isSubmittingPost ? (
-                  <>
-                    <span className="spin" style={{ width: "12px", height: "12px", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block" }} />
-                    Saving…
-                  </>
-                ) : "Assign"}
-              </button>
+            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+              <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Find tasks</h2>
+              <p style={{ marginTop: "3px", color: "var(--text-muted)", fontSize: "0.76rem", lineHeight: 1.5 }}>
+                Search first, then narrow by person or status.
+              </p>
             </div>
-            <form
-              id="new-post-form"
-              onSubmit={handleCreatePost}
-              style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}
-            >
-              <Field label="Title">
+            <div style={{ padding: "16px 18px 18px", display: "grid", gap: "12px" }}>
+              <Field label="Search">
                 <input
-                  value={postDraft.title}
-                  onChange={(e) =>
-                    setPostDraft((cur) => ({ ...cur, title: e.target.value }))
-                  }
-                  placeholder="Paste the exact Reddit title"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Title, comment, subreddit, person"
                   className="input"
+                  style={{ height: "40px", fontSize: "0.82rem" }}
                 />
               </Field>
-              <Field label="Post body">
-                <textarea
-                  value={postDraft.postBody}
-                  onChange={(e) =>
-                    setPostDraft((cur) => ({ ...cur, postBody: e.target.value }))
-                  }
-                  placeholder="Paste the post body here"
-                  className="input"
-                  style={{ minHeight: "100px", resize: "vertical" }}
-                />
-              </Field>
-              <Field label="Subreddit link">
-                <input
-                  value={postDraft.subredditUrl}
-                  onChange={(e) =>
-                    setPostDraft((cur) => ({ ...cur, subredditUrl: e.target.value }))
-                  }
-                  placeholder="https://reddit.com/r/example"
-                  className="input"
-                />
-              </Field>
-              <Field label="Assign post to">
+              <Field label="Person">
                 <select
-                  value={postDraft.assigneeId}
-                  onChange={(e) =>
-                    setPostDraft((cur) => ({ ...cur, assigneeId: e.target.value }))
-                  }
+                  value={activeAssignee}
+                  onChange={(e) => setActiveAssignee(e.target.value)}
                   className="input"
+                  style={{ height: "40px", fontSize: "0.82rem" }}
                 >
-                {team.map((m) => (
+                  <option value="all">All people</option>
+                  {team.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.name}
                     </option>
                   ))}
                 </select>
               </Field>
-              {postError && (
-                <div style={{ background: "rgba(255,69,0,0.1)", border: "1px solid rgba(255,69,0,0.3)", borderRadius: "8px", padding: "10px 14px" }}>
-                  <p style={{ fontSize: "0.78rem", fontWeight: 700, color: "#ff7043" }}>{postError}</p>
-                </div>
-              )}
-            </form>
+              <Field label="Status">
+                <select
+                  value={activeStatus}
+                  onChange={(e) => setActiveStatus(e.target.value as StatusFilter)}
+                  className="input"
+                  style={{ height: "40px", fontSize: "0.82rem" }}
+                >
+                  <option value="active">Active work</option>
+                  <option value="all">All statuses</option>
+                  {Object.entries(statusLabels).map(([v, l]) => (
+                    <option key={v} value={v}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  borderTop: "1px solid var(--border)",
+                  paddingTop: "12px",
+                  color: "var(--text-muted)",
+                  fontSize: "0.76rem",
+                  fontWeight: 700,
+                }}
+              >
+                <span>{filteredPosts.length} visible</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setActiveAssignee("all");
+                    setActiveStatus("active");
+                  }}
+                  className="btn-ghost"
+                  style={{ padding: "5px 10px", fontSize: "0.72rem" }}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
           </div>
 
-          {/* Team roster */}
           <div
             style={{
               background: "var(--bg-card)",
@@ -989,75 +1105,84 @@ export default function Home() {
               overflow: "hidden",
             }}
           >
-            <div
+            <button
+              type="button"
+              onClick={() => setIsTeamPanelOpen((value) => !value)}
               style={{
+                width: "100%",
                 padding: "14px 18px",
-                borderBottom: "1px solid var(--border)",
+                background: "transparent",
+                border: "none",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
+                color: "var(--text-primary)",
+                textAlign: "left",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span
-                  style={{
-                    background: "var(--indigo-dim)",
-                    borderRadius: "8px",
-                    padding: "5px 7px",
-                    fontSize: "1rem",
-                  }}
-                >
-                  👥
+              <span>
+                <span style={{ display: "block", fontWeight: 800, fontSize: "1rem" }}>
+                  Team settings
                 </span>
-                <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Team of 8</h2>
-              </div>
-              <button
-                onClick={exportJson}
-                className="btn-ghost"
-                style={{ padding: "5px 12px", fontSize: "0.75rem" }}
+                <span style={{ color: "var(--text-muted)", fontSize: "0.74rem" }}>
+                  Edit names only when needed
+                </span>
+              </span>
+              <span style={{ color: "var(--accent)", fontWeight: 900 }}>
+                {isTeamPanelOpen ? "−" : "+"}
+              </span>
+            </button>
+
+            {isTeamPanelOpen && (
+              <div
+                style={{
+                  borderTop: "1px solid var(--border)",
+                  padding: "12px 18px 18px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                }}
               >
-                Export JSON
-              </button>
-            </div>
-            <div
-              style={{
-                padding: "12px 18px 18px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "8px",
-              }}
-            >
-              {team.map((member, index) => (
-                <label key={member.id} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span
-                    style={{
-                      flexShrink: 0,
-                      width: "34px",
-                      height: "34px",
-                      borderRadius: "50%",
-                      background: avatarColor(index),
-                      display: "grid",
-                      placeItems: "center",
-                      fontSize: "0.7rem",
-                      fontWeight: 800,
-                      color: "#fff",
-                    }}
-                  >
-                    {initials(member.name)}
-                  </span>
-                  <input
-                    value={member.name}
-                    onChange={(e) => handleTeamNameChange(member.id, e.target.value)}
-                    className="input"
-                    style={{ height: "36px", fontSize: "0.82rem" }}
-                  />
-                </label>
-              ))}
-            </div>
+                {team.map((member, index) => (
+                  <label key={member.id} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        width: "34px",
+                        height: "34px",
+                        borderRadius: "50%",
+                        background: avatarColor(index),
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: "0.7rem",
+                        fontWeight: 800,
+                        color: "#fff",
+                      }}
+                    >
+                      {initials(member.name)}
+                    </span>
+                    <input
+                      value={member.name}
+                      onChange={(e) => handleTeamNameChange(member.id, e.target.value)}
+                      className="input"
+                      style={{ height: "36px", fontSize: "0.82rem" }}
+                    />
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  onClick={exportJson}
+                  className="btn-ghost"
+                  style={{ marginTop: "6px", padding: "7px 12px", fontSize: "0.75rem" }}
+                >
+                  Export JSON
+                </button>
+              </div>
+            )}
           </div>
         </aside>
 
-        {/* Kanban */}
+        {/* Queue */}
         <section style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
           <div
             style={{
@@ -1075,52 +1200,31 @@ export default function Home() {
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Assignment queue</h2>
               <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "2px" }}>
-                Drag the canvas sideways to scroll through all cards.
+                Active work is shown by default. Expand a card only when you need details.
               </p>
             </div>
-            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <select
-                value={activeAssignee}
-                onChange={(e) => setActiveAssignee(e.target.value)}
-                className="input"
-                style={{ height: "38px", minWidth: "148px", fontSize: "0.82rem" }}
-              >
-                <option value="all">All people</option>
-                {team.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={activeStatus}
-                onChange={(e) => setActiveStatus(e.target.value as "all" | Status)}
-                className="input"
-                style={{ height: "38px", minWidth: "130px", fontSize: "0.82rem" }}
-              >
-                <option value="all">All status</option>
-                {Object.entries(statusLabels).map(([v, l]) => (
-                  <option key={v} value={v}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <span
+              style={{
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border)",
+                borderRadius: "999px",
+                padding: "5px 12px",
+                color: "var(--text-muted)",
+                fontSize: "0.76rem",
+                fontWeight: 800,
+              }}
+            >
+              {filteredPosts.length} shown
+            </span>
           </div>
 
           <div
-            ref={assignmentCanvasRef}
-            onPointerDown={handleAssignmentCanvasPointerDown}
-            onPointerLeave={handleAssignmentCanvasPointerEnd}
-            onPointerMove={handleAssignmentCanvasPointerMove}
-            onPointerUp={handleAssignmentCanvasPointerEnd}
-            className="drag-canvas"
             style={{
               minHeight: "540px",
-              overflowX: "auto",
               borderRadius: "14px",
               border: "1px solid var(--border)",
               background: "var(--bg-elevated)",
+              padding: filteredPosts.length === 0 ? 0 : "14px",
             }}
           >
             {filteredPosts.length === 0 ? (
@@ -1142,7 +1246,9 @@ export default function Home() {
                   }}
                 >
                   <span style={{ fontSize: "3rem" }}>📋</span>
-                  <h3 style={{ fontSize: "1.3rem", fontWeight: 900 }}>No assignments yet</h3>
+                  <h3 style={{ fontSize: "1.3rem", fontWeight: 900 }}>
+                    No matching assignments
+                  </h3>
                   <p
                     style={{
                       color: "var(--text-muted)",
@@ -1151,19 +1257,15 @@ export default function Home() {
                       fontSize: "0.88rem",
                     }}
                   >
-                    Add a title, post body, subreddit link and a teammate using the form on the
-                    left.
+                    Try another search or filter, or create a new post from the top button.
                   </p>
                 </div>
               </div>
             ) : (
               <div
                 style={{
-                  display: "flex",
-                  gap: "16px",
-                  padding: "16px",
-                  width: "max-content",
-                  minWidth: "100%",
+                  display: "grid",
+                  gap: "14px",
                 }}
               >
                 {filteredPosts.map((post) => {
@@ -1239,8 +1341,7 @@ function PostCard({
     <article
       className={glowClass}
       style={{
-        width: "min(760px, calc(100vw - 2rem))",
-        flexShrink: 0,
+        width: "100%",
         borderRadius: "12px",
         background: "var(--bg-card)",
         border: "1px solid var(--border-bright)",
