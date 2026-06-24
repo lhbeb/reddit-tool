@@ -221,6 +221,7 @@ export default function Home() {
   const [postDraft, setPostDraft] = useState({
     title: "", postBody: "", subredditUrl: "", assigneeId: "",
   });
+  const [postError, setPostError] = useState("");
   const [commentDrafts, setCommentDrafts] = useState<
     Record<string, { body: string; assigneeId: string }>
   >({});
@@ -277,13 +278,15 @@ export default function Home() {
 
       // Restore session
       const savedSlug = window.localStorage.getItem(SESSION_KEY);
-      if (savedSlug) {
-        const found = loadedTeam.find((m) => m.slug === savedSlug);
-        if (found) {
-          setCurrentUser(found);
-          setActiveAssignee(found.id);
-          setPostDraft((cur) => ({ ...cur, assigneeId: found.id }));
-        }
+      const found = savedSlug ? loadedTeam.find((m) => m.slug === savedSlug) : null;
+      if (found) {
+        setCurrentUser(found);
+        setActiveAssignee(found.id);
+        // Seed assigneeId for the post form — always use a real UUID
+        setPostDraft((cur) => ({ ...cur, assigneeId: found.id }));
+      } else if (loadedTeam.length > 0) {
+        // No session yet — default form assignee to first team member
+        setPostDraft((cur) => ({ ...cur, assigneeId: loadedTeam[0].id }));
       }
 
       setLoading(false);
@@ -425,24 +428,35 @@ export default function Home() {
 
   async function handleCreatePost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setPostError("");
     if (!postDraft.title.trim() || !postDraft.postBody.trim()) return;
+
+    // Always resolve to a real UUID — never pass an empty string to a UUID FK column
+    const assigneeId = postDraft.assigneeId || team[0]?.id;
+    if (!assigneeId) { setPostError("Team not loaded yet — try again."); return; }
 
     const { data, error } = await supabase
       .from("reddit_posts")
       .insert({
         title: postDraft.title.trim(),
         post_body: postDraft.postBody.trim(),
-        subreddit_url: postDraft.subredditUrl.trim(),
-        published_url: "",
-        assignee_id: postDraft.assigneeId || team[0]?.id,
+        subreddit_url: postDraft.subredditUrl.trim() || null,
+        published_url: null,          // null, never empty string
+        assignee_id: assigneeId,
         status: "queued",
-        created_by_id: currentUser?.id,
+        created_by_id: currentUser?.id ?? null,
       })
       .select()
       .single();
 
-    if (!error && data) {
-      setPostDraft({ title: "", postBody: "", subredditUrl: "", assigneeId: postDraft.assigneeId });
+    if (error) {
+      console.error("[create-post]", error);
+      setPostError(`Failed to save: ${error.message}`);
+      return;
+    }
+
+    if (data) {
+      setPostDraft({ title: "", postBody: "", subredditUrl: "", assigneeId });
       await loadPosts();
     }
   }
@@ -913,13 +927,18 @@ export default function Home() {
                   }
                   className="input"
                 >
-                  {team.map((m) => (
+                {team.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.name}
                     </option>
                   ))}
                 </select>
               </Field>
+              {postError && (
+                <div style={{ background: "rgba(255,69,0,0.1)", border: "1px solid rgba(255,69,0,0.3)", borderRadius: "8px", padding: "10px 14px" }}>
+                  <p style={{ fontSize: "0.78rem", fontWeight: 700, color: "#ff7043" }}>{postError}</p>
+                </div>
+              )}
             </form>
           </div>
 
