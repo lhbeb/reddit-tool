@@ -218,6 +218,7 @@ export default function Home() {
   const [loginError, setLoginError] = useState("");
   const [activeAssignee, setActiveAssignee] = useState("all");
   const [activeStatus, setActiveStatus] = useState<"all" | Status>("all");
+  const [isSubmittingPost, setIsSubmittingPost] = useState(false);
   const [postDraft, setPostDraft] = useState({
     title: "", postBody: "", subredditUrl: "", assigneeId: "",
   });
@@ -281,8 +282,9 @@ export default function Home() {
       const found = savedSlug ? loadedTeam.find((m) => m.slug === savedSlug) : null;
       if (found) {
         setCurrentUser(found);
-        setActiveAssignee(found.id);
-        // Seed assigneeId for the post form — always use a real UUID
+        // Admins see ALL posts by default; members see only their own
+        setActiveAssignee(found.isAdmin ? "all" : found.id);
+        // Seed the post-form assignee to a real UUID
         setPostDraft((cur) => ({ ...cur, assigneeId: found.id }));
       } else if (loadedTeam.length > 0) {
         // No session yet — default form assignee to first team member
@@ -414,7 +416,8 @@ export default function Home() {
     const found = team.find((m) => m.slug === loginDraft.slug);
     if (!found) { setLoginError("Member not found."); return; }
     setCurrentUser(found);
-    setActiveAssignee(found.id);
+    // Admins see ALL posts; members see only their own
+    setActiveAssignee(found.isAdmin ? "all" : found.id);
     setPostDraft((cur) => ({ ...cur, assigneeId: found.id }));
     setLoginError("");
     window.localStorage.setItem(SESSION_KEY, found.slug);
@@ -435,27 +438,35 @@ export default function Home() {
     const assigneeId = postDraft.assigneeId || team[0]?.id;
     if (!assigneeId) { setPostError("Team not loaded yet — try again."); return; }
 
-    const { data, error } = await supabase
-      .from("reddit_posts")
-      .insert({
-        title: postDraft.title.trim(),
-        post_body: postDraft.postBody.trim(),
-        subreddit_url: postDraft.subredditUrl.trim() || null,
-        assignee_id: assigneeId,
-        status: "queued",
-      })
-      .select()
-      .single();
+    setIsSubmittingPost(true);
+    try {
+      const { data, error } = await supabase
+        .from("reddit_posts")
+        .insert({
+          title: postDraft.title.trim(),
+          post_body: postDraft.postBody.trim(),
+          subreddit_url: postDraft.subredditUrl.trim() || null,
+          assignee_id: assigneeId,
+          status: "queued",
+        })
+        .select()
+        .single();
 
-    if (error) {
-      console.error("[create-post]", error);
-      setPostError(`Failed to save: ${error.message}`);
-      return;
-    }
+      if (error) {
+        console.error("[create-post] Supabase error:", error);
+        setPostError(`Failed to save: ${error.message}`);
+        return;
+      }
 
-    if (data) {
-      setPostDraft({ title: "", postBody: "", subredditUrl: "", assigneeId });
-      await loadPosts();
+      if (data) {
+        console.log("[create-post] Inserted:", data.id);
+        setPostDraft({ title: "", postBody: "", subredditUrl: "", assigneeId });
+        // Ensure admin filter shows all so the new post is visible
+        setActiveAssignee("all");
+        await loadPosts();
+      }
+    } finally {
+      setIsSubmittingPost(false);
     }
   }
 
@@ -877,10 +888,16 @@ export default function Home() {
               <button
                 form="new-post-form"
                 type="submit"
+                disabled={isSubmittingPost}
                 className="btn-primary"
-                style={{ padding: "7px 16px", fontSize: "0.8rem" }}
+                style={{ padding: "7px 16px", fontSize: "0.8rem", opacity: isSubmittingPost ? 0.7 : 1, display: "flex", alignItems: "center", gap: "6px" }}
               >
-                Assign
+                {isSubmittingPost ? (
+                  <>
+                    <span className="spin" style={{ width: "12px", height: "12px", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block" }} />
+                    Saving…
+                  </>
+                ) : "Assign"}
               </button>
             </div>
             <form
