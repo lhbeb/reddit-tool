@@ -441,10 +441,8 @@ export default function Home() {
         title: postDraft.title.trim(),
         post_body: postDraft.postBody.trim(),
         subreddit_url: postDraft.subredditUrl.trim() || null,
-        published_url: null,          // null, never empty string
         assignee_id: assigneeId,
         status: "queued",
-        created_by_id: currentUser?.id ?? null,
       })
       .select()
       .single();
@@ -472,16 +470,18 @@ export default function Home() {
       body: draft.body.trim(),
       assignee_id: draft.assigneeId,
       status: "queued",
-      created_by_id: currentUser?.id,
     });
 
-    if (!error) {
-      setCommentDrafts((cur) => ({
-        ...cur,
-        [draftKey]: { body: "", assigneeId: draft.assigneeId },
-      }));
-      await loadPosts();
+    if (error) {
+      console.error("[create-comment]", error);
+      return;
     }
+
+    setCommentDrafts((cur) => ({
+      ...cur,
+      [draftKey]: { body: "", assigneeId: draft.assigneeId },
+    }));
+    await loadPosts();
   }
 
   async function updatePost(postId: string, changes: Partial<RedditPost>) {
