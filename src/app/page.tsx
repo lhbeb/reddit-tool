@@ -13,6 +13,8 @@ import { supabase } from "@/lib/supabase";
 /* ─── Types ──────────────────────────────────────────────────── */
 type Status = "queued" | "working" | "done";
 type StatusFilter = "active" | "all" | Status;
+type SortMode = "newest" | "oldest" | "assignee";
+type ScopeFilter = "all" | "with-comments";
 
 type TeamMember = {
   id: string;   // UUID from DB
@@ -60,6 +62,7 @@ type AssignedTask = {
 
 /* ─── Constants ──────────────────────────────────────────────── */
 const SESSION_KEY = "reddit-assignment-session-v2"; // v2 = slug-based
+const ADMIN_FILTER_PREFS_KEY = "reddit-assignment-admin-filters-v1";
 const LOCAL_PASSWORD = "Localserver!!2";
 
 const statusLabels: Record<Status, string> = {
@@ -67,6 +70,24 @@ const statusLabels: Record<Status, string> = {
   working: "Working",
   done: "Done",
 };
+
+const sortLabels: Record<SortMode, string> = {
+  newest: "Newest first",
+  oldest: "Oldest first",
+  assignee: "By assignee",
+};
+
+function isStatusFilter(value: unknown): value is StatusFilter {
+  return value === "active" || value === "all" || value === "queued" || value === "working" || value === "done";
+}
+
+function isSortMode(value: unknown): value is SortMode {
+  return value === "newest" || value === "oldest" || value === "assignee";
+}
+
+function isScopeFilter(value: unknown): value is ScopeFilter {
+  return value === "all" || value === "with-comments";
+}
 
 /* ─── Helpers ────────────────────────────────────────────────── */
 function getMemberName(team: TeamMember[], id: string) {
@@ -233,7 +254,9 @@ const POST_SELECT_PLANS: SupabaseSelectPlan[] = [
   },
 ];
 
-function formatSupabaseError(error: unknown) {
+let postSelectPlanIndex = 0;
+
+function getSupabaseErrorMessage(error: unknown) {
   if (!error || typeof error !== "object") return String(error ?? "Unknown Supabase error");
   const shaped = error as SupabaseErrorShape;
   const parts = [shaped.code, shaped.message, shaped.details, shaped.hint].filter(Boolean);
@@ -244,6 +267,16 @@ function formatSupabaseError(error: unknown) {
   } catch {
     return "Unknown Supabase error";
   }
+}
+
+function formatSupabaseError(error: unknown) {
+  return getSupabaseErrorMessage(error);
+}
+
+function isMissingColumnError(error: unknown, columnName: string) {
+  if (!error || typeof error !== "object") return false;
+  const shaped = error as SupabaseErrorShape;
+  return shaped.code === "42703" && getSupabaseErrorMessage(error).includes(columnName);
 }
 
 function dbCommentToApp(row: DbCommentRow): RedditComment {
@@ -282,7 +315,10 @@ export default function Home() {
   const [loginError, setLoginError] = useState("");
   const [activeAssignee, setActiveAssignee] = useState("all");
   const [activeStatus, setActiveStatus] = useState<StatusFilter>("active");
+  const [activeScope, setActiveScope] = useState<ScopeFilter>("all");
+  const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [searchQuery, setSearchQuery] = useState("");
+  const [adminFiltersReady, setAdminFiltersReady] = useState(false);
   const [isCreatePostOpen, setIsCreatePostOpen] = useState(false);
   const [isTeamPanelOpen, setIsTeamPanelOpen] = useState(false);
   const [isSubmittingPost, setIsSubmittingPost] = useState(false);
@@ -320,14 +356,20 @@ export default function Home() {
   /* ── Load posts + nested comments from DB ──────────────────── */
   const loadPosts = useCallback(async () => {
     let lastError: unknown = null;
+    const orderedPlans = [
+      ...POST_SELECT_PLANS.slice(postSelectPlanIndex),
+      ...POST_SELECT_PLANS.slice(0, postSelectPlanIndex),
+    ];
 
-    for (const plan of POST_SELECT_PLANS) {
+    for (const plan of orderedPlans) {
       const { data, error } = await supabase
         .from("reddit_posts")
         .select(plan.query)
         .order("created_at", { ascending: false });
 
       if (!error && data) {
+        const nextIndex = POST_SELECT_PLANS.findIndex((candidate) => candidate.label === plan.label);
+        if (nextIndex >= 0) postSelectPlanIndex = nextIndex;
         setPosts((data as unknown as DbPostRow[]).map(dbPostToApp));
         return;
       }
@@ -386,12 +428,59 @@ export default function Home() {
     return () => { supabase.removeChannel(channel); };
   }, [loadPosts, loadTeam]);
 
+  useEffect(() => {
+    if (!currentUser?.isAdmin || adminFiltersReady || team.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      try {
+        const raw = window.localStorage.getItem(ADMIN_FILTER_PREFS_KEY);
+        if (raw) {
+          const prefs = JSON.parse(raw) as Partial<{
+            activeAssignee: string;
+            activeScope: ScopeFilter;
+            activeStatus: StatusFilter;
+            searchQuery: string;
+            sortMode: SortMode;
+          }>;
+
+          if (typeof prefs.searchQuery === "string") setSearchQuery(prefs.searchQuery);
+          if (isStatusFilter(prefs.activeStatus)) setActiveStatus(prefs.activeStatus);
+          if (isScopeFilter(prefs.activeScope)) setActiveScope(prefs.activeScope);
+          if (isSortMode(prefs.sortMode)) setSortMode(prefs.sortMode);
+
+          const savedAssignee = prefs.activeAssignee;
+          if (
+            savedAssignee === "all" ||
+            (typeof savedAssignee === "string" && team.some((member) => member.id === savedAssignee))
+          ) {
+            setActiveAssignee(savedAssignee);
+          }
+        }
+      } catch {
+        window.localStorage.removeItem(ADMIN_FILTER_PREFS_KEY);
+      } finally {
+        setAdminFiltersReady(true);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [adminFiltersReady, currentUser?.isAdmin, team]);
+  useEffect(() => {
+    if (!currentUser?.isAdmin || !adminFiltersReady) return;
+
+    window.localStorage.setItem(
+      ADMIN_FILTER_PREFS_KEY,
+      JSON.stringify({ activeAssignee, activeScope, activeStatus, searchQuery, sortMode }),
+    );
+  }, [activeAssignee, activeScope, activeStatus, adminFiltersReady, currentUser?.isAdmin, searchQuery, sortMode]);
+
   /* ── Derived ────────────────────────────────────────────────── */
   const stats = useMemo(() => {
     const comments = posts.flatMap((p) => p.comments);
     return {
       posts: posts.length,
       comments: comments.length,
+      withComments: posts.filter((post) => post.comments.length > 0).length,
       queued:
         posts.filter((p) => p.status === "queued").length +
         comments.filter((c) => c.status === "queued").length,
@@ -480,8 +569,8 @@ export default function Home() {
   const filteredPosts = useMemo(
     () => {
       const normalizedSearch = searchQuery.trim().toLowerCase();
-
-      return posts.filter((post) => {
+      const matchingPosts = posts.filter((post) => {
+        const scopeMatch = activeScope === "all" || post.comments.length > 0;
         const assigneeMatch =
           activeAssignee === "all" ||
           post.assigneeId === activeAssignee ||
@@ -510,13 +599,103 @@ export default function Home() {
             .toLowerCase()
             .includes(normalizedSearch);
 
-        return assigneeMatch && statusMatch && searchMatch;
+        return scopeMatch && assigneeMatch && statusMatch && searchMatch;
+      });
+
+      return matchingPosts.sort((a, b) => {
+        if (sortMode === "oldest") {
+          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        }
+
+        if (sortMode === "assignee") {
+          const assigneeDiff = getMemberName(team, a.assigneeId).localeCompare(
+            getMemberName(team, b.assigneeId),
+          );
+          if (assigneeDiff !== 0) return assigneeDiff;
+        }
+
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
     },
-    [activeAssignee, activeStatus, posts, searchQuery, team],
+    [activeAssignee, activeScope, activeStatus, posts, searchQuery, sortMode, team],
   );
 
+  const filterSummaryText = useMemo(() => {
+    const parts = [sortLabels[sortMode]];
+    if (activeStatus !== "active") {
+      parts.push(activeStatus === "all" ? "all statuses" : statusLabels[activeStatus].toLowerCase());
+    }
+    if (activeScope === "with-comments") parts.push("with comments");
+    if (activeAssignee !== "all") parts.push(getMemberName(team, activeAssignee));
+    if (searchQuery.trim()) parts.push(`matching "${searchQuery.trim()}"`);
+    return parts.join(" - ");
+  }, [activeAssignee, activeScope, activeStatus, searchQuery, sortMode, team]);
+
+  const emptyState = useMemo(() => {
+    if (posts.length === 0) {
+      return {
+        title: "No assignments yet",
+        body: "Create the first Reddit post from the New post button.",
+      };
+    }
+
+    if (searchQuery.trim()) {
+      return {
+        title: "Nothing matches that search",
+        body: `No title, comment, subreddit, or person matches "${searchQuery.trim()}". Clear search to see the queue again.`,
+      };
+    }
+
+    if (activeScope === "with-comments") {
+      return {
+        title: "No posts with comments here",
+        body: "Switch Show back to All posts or add a comment assignment to a post.",
+      };
+    }
+
+    if (activeAssignee !== "all") {
+      return {
+        title: `No tasks for ${getMemberName(team, activeAssignee)}`,
+        body: "Pick All people or choose another teammate.",
+      };
+    }
+
+    return {
+      title: "No matching assignments",
+      body: activeStatus === "active"
+        ? "Everything visible is done. Switch status to All statuses or create a new post."
+        : "Try another status filter or reset the filters.",
+    };
+  }, [activeAssignee, activeScope, activeStatus, posts.length, searchQuery, team]);
   /* ── Handlers ─────────────────────────────────────────────── */
+  function resetAdminFilters() {
+    setSearchQuery("");
+    setActiveAssignee("all");
+    setActiveStatus("active");
+    setActiveScope("all");
+    setSortMode("newest");
+  }
+
+  function applyMetricFilter(metric: "posts" | "comments" | "queued" | "done") {
+    setSearchQuery("");
+    setActiveAssignee("all");
+    setSortMode("newest");
+
+    if (metric === "posts") {
+      setActiveScope("all");
+      setActiveStatus("all");
+      return;
+    }
+
+    if (metric === "comments") {
+      setActiveScope("with-comments");
+      setActiveStatus("all");
+      return;
+    }
+
+    setActiveScope("all");
+    setActiveStatus(metric);
+  }
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (loginDraft.password !== LOCAL_PASSWORD) {
@@ -563,8 +742,9 @@ export default function Home() {
         .single();
 
       if (error) {
-        console.error("[create-post] Supabase error:", error);
-        setPostError(`Failed to save: ${error.message}`);
+        const message = formatSupabaseError(error);
+        console.error("[create-post] Supabase error:", message);
+        setPostError(`Failed to save: ${message}`);
         return;
       }
 
@@ -595,7 +775,13 @@ export default function Home() {
     };
     if (parentId) insertPayload.parent_id = parentId;
 
-    const { error } = await supabase.from("reddit_comments").insert(insertPayload);
+    let { error } = await supabase.from("reddit_comments").insert(insertPayload);
+
+    if (error && parentId && isMissingColumnError(error, "parent_id")) {
+      const fallbackPayload = { ...insertPayload };
+      delete fallbackPayload.parent_id;
+      ({ error } = await supabase.from("reddit_comments").insert(fallbackPayload));
+    }
 
     if (error) {
       console.error("[create-comment]", formatSupabaseError(error));
@@ -614,7 +800,19 @@ export default function Home() {
     if (changes.status !== undefined)     dbChanges.status = changes.status;
     if (changes.publishedUrl !== undefined) dbChanges.published_url = changes.publishedUrl;
 
-    const { error } = await supabase.from("reddit_posts").update(dbChanges).eq("id", postId);
+    let { error } = await supabase.from("reddit_posts").update(dbChanges).eq("id", postId);
+
+    if (error && "published_url" in dbChanges && isMissingColumnError(error, "published_url")) {
+      const fallbackChanges = { ...dbChanges };
+      delete fallbackChanges.published_url;
+
+      if (Object.keys(fallbackChanges).length > 0) {
+        ({ error } = await supabase.from("reddit_posts").update(fallbackChanges).eq("id", postId));
+      } else {
+        error = null;
+      }
+    }
+
     if (error) {
       console.error("[update-post]", formatSupabaseError(error));
       return;
@@ -631,7 +829,11 @@ export default function Home() {
     if (changes.assigneeId !== undefined) dbChanges.assignee_id = changes.assigneeId;
     if (changes.status !== undefined)     dbChanges.status = changes.status;
 
-    await supabase.from("reddit_comments").update(dbChanges).eq("id", commentId);
+    const { error } = await supabase.from("reddit_comments").update(dbChanges).eq("id", commentId);
+    if (error) {
+      console.error("[update-comment]", formatSupabaseError(error));
+      return;
+    }
     await loadPosts();
   }
 
@@ -1228,10 +1430,38 @@ export default function Home() {
             </button>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
-            <MetricCard label="Posts"    value={stats.posts}    accent="var(--accent)" />
-            <MetricCard label="Comments" value={stats.comments} accent="var(--indigo)" />
-            <MetricCard label="Queued"   value={stats.queued}   accent="var(--yellow)" />
-            <MetricCard label="Done"     value={stats.done}     accent="var(--green)" />
+            <MetricCard
+              active={activeScope === "all" && activeStatus === "all"}
+              accent="var(--accent)"
+              hint="Show every post"
+              label="Posts"
+              onClick={() => applyMetricFilter("posts")}
+              value={stats.posts}
+            />
+            <MetricCard
+              active={activeScope === "with-comments"}
+              accent="var(--indigo)"
+              hint={`${stats.withComments} posts have comments`}
+              label="Comments"
+              onClick={() => applyMetricFilter("comments")}
+              value={stats.comments}
+            />
+            <MetricCard
+              active={activeStatus === "queued"}
+              accent="var(--yellow)"
+              hint="Waiting work"
+              label="Queued"
+              onClick={() => applyMetricFilter("queued")}
+              value={stats.queued}
+            />
+            <MetricCard
+              active={activeStatus === "done"}
+              accent="var(--green)"
+              hint="Finished work"
+              label="Done"
+              onClick={() => applyMetricFilter("done")}
+              value={stats.done}
+            />
           </div>
         </div>
       </section>
@@ -1289,6 +1519,17 @@ export default function Home() {
                   ))}
                 </select>
               </Field>
+              <Field label="Show">
+                <select
+                  value={activeScope}
+                  onChange={(e) => setActiveScope(e.target.value as ScopeFilter)}
+                  className="input"
+                  style={{ height: "40px", fontSize: "0.82rem" }}
+                >
+                  <option value="all">All posts</option>
+                  <option value="with-comments">With comments</option>
+                </select>
+              </Field>
               <Field label="Status">
                 <select
                   value={activeStatus}
@@ -1301,6 +1542,20 @@ export default function Home() {
                   {Object.entries(statusLabels).map(([v, l]) => (
                     <option key={v} value={v}>
                       {l}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Sort">
+                <select
+                  value={sortMode}
+                  onChange={(e) => setSortMode(e.target.value as SortMode)}
+                  className="input"
+                  style={{ height: "40px", fontSize: "0.82rem" }}
+                >
+                  {Object.entries(sortLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
                     </option>
                   ))}
                 </select>
@@ -1320,11 +1575,7 @@ export default function Home() {
                 <span>{filteredPosts.length} visible</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSearchQuery("");
-                    setActiveAssignee("all");
-                    setActiveStatus("active");
-                  }}
+                  onClick={resetAdminFilters}
                   className="btn-ghost"
                   style={{ padding: "5px 10px", fontSize: "0.72rem" }}
                 >
@@ -1437,7 +1688,7 @@ export default function Home() {
             <div>
               <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Assignment queue</h2>
               <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "2px" }}>
-                Active work is shown by default. Expand a card only when you need details.
+                {filterSummaryText}
               </p>
             </div>
             <span
@@ -1451,7 +1702,7 @@ export default function Home() {
                 fontWeight: 800,
               }}
             >
-              {filteredPosts.length} shown
+              {filteredPosts.length} shown - {sortLabels[sortMode]}
             </span>
           </div>
 
@@ -1482,9 +1733,9 @@ export default function Home() {
                     gap: "12px",
                   }}
                 >
-                  <span style={{ fontSize: "3rem" }}>📋</span>
-                  <h3 style={{ fontSize: "1.3rem", fontWeight: 900 }}>
-                    No matching assignments
+                  <span style={{ fontSize: "2rem", color: "var(--text-muted)", fontWeight: 900 }}>[]</span>
+                  <h3 style={{ fontSize: "1.08rem", fontWeight: 900 }}>
+                    {emptyState.title}
                   </h3>
                   <p
                     style={{
@@ -1494,7 +1745,7 @@ export default function Home() {
                       fontSize: "0.88rem",
                     }}
                   >
-                    Try another search or filter, or create a new post from the top button.
+                    {emptyState.body}
                   </p>
                 </div>
               </div>
@@ -1541,6 +1792,19 @@ export default function Home() {
       </section>
 
       <style>{`
+        .metric-card {
+          text-align: left;
+          transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+        }
+
+        .metric-card:hover {
+          transform: translateY(-1px);
+          background: var(--bg-card-hover) !important;
+        }
+
+        .metric-card.is-active {
+          box-shadow: 0 0 0 3px rgba(255,255,255,0.03);
+        }
         .post-card-summary {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
@@ -1603,7 +1867,20 @@ export default function Home() {
         }
 
         @media (max-width: 760px) {
-          .post-card-summary {
+          .metric-card {
+          text-align: left;
+          transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+        }
+
+        .metric-card:hover {
+          transform: translateY(-1px);
+          background: var(--bg-card-hover) !important;
+        }
+
+        .metric-card.is-active {
+          box-shadow: 0 0 0 3px rgba(255,255,255,0.03);
+        }
+        .post-card-summary {
             grid-template-columns: 1fr;
           }
 
@@ -2153,31 +2430,42 @@ function TopNav({
   );
 }
 
-function MetricCard({ label, value, accent }: { label: string; value: number; accent: string }) {
+function MetricCard({
+  active = false, accent, hint, label, onClick, value,
+}: {
+  active?: boolean;
+  accent: string;
+  hint: string;
+  label: string;
+  onClick: () => void;
+  value: number;
+}) {
   return (
-    <div
+    <button
+      type="button"
+      onClick={onClick}
+      className={`metric-card ${active ? "is-active" : ""}`}
       style={{
         background: "var(--bg-card)",
-        border: "1px solid var(--border)",
+        border: active ? `1px solid ${accent}` : "1px solid var(--border)",
         borderRadius: "12px",
         padding: "14px 18px",
         borderTop: `2px solid ${accent}`,
+        color: "var(--text-primary)",
       }}
     >
       <p
         style={{
-          fontSize: "0.72rem",
-          fontWeight: 700,
-          color: "var(--text-muted)",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
+          fontSize: "0.74rem",
+          fontWeight: 800,
+          color: active ? accent : "var(--text-muted)",
         }}
       >
         {label}
       </p>
       <p
         style={{
-          fontSize: "2rem",
+          fontSize: "1.75rem",
           fontWeight: 900,
           lineHeight: 1.1,
           color: accent,
@@ -2186,10 +2474,12 @@ function MetricCard({ label, value, accent }: { label: string; value: number; ac
       >
         {value}
       </p>
-    </div>
+      <p style={{ marginTop: "4px", color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 700 }}>
+        {hint}
+      </p>
+    </button>
   );
 }
-
 function TeamMemberChip({
   compact = false, label, memberId, team,
 }: {

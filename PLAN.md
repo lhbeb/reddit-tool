@@ -8,6 +8,7 @@ This file exists so the UI/UX work can continue cleanly after a context compact,
 - Chunk 2 / Phase 2 is complete: admin post cards are now compact by default and expandable for full details.
 - Chunk 3 / Phase 3 is complete: member dashboard is pending-first, done tasks are collapsed, and each task has one clear action path.
 - Chunk 4 / Phase 4 is complete: comment threads now collapse deeper replies and keep reply composers opt-in.
+- Chunk 5 / Phase 5 is complete: admin search, sort, metric filters, remembered preferences, and smarter empty states are implemented.
 - The create-post form moved into a modal behind `+ New post`.
 - The always-visible team editor moved into a collapsible `Team settings` panel.
 - The left admin panel is now focused on search and filters.
@@ -17,7 +18,7 @@ This file exists so the UI/UX work can continue cleanly after a context compact,
 
 ## Remaining Chunks
 
-There are 2 main chunks left.
+There is 1 main chunk left.
 
 ## Chunk 2 / Phase 2: Post Card Redesign
 
@@ -103,16 +104,18 @@ Main targets:
 
 ## Chunk 5 / Phase 5: Search, Sort, And Filtering
 
+Status: Complete.
+
 Goal: admin can find any task quickly.
 
-Already started:
+Completed:
 
 - Search input exists.
 - Status filter exists.
 - Assignee filter exists.
 - Active work is the default.
 
-Remaining:
+Completed:
 
 - Add sort options: newest first, oldest first, by assignee.
 - Make metric cards clickable filters.
