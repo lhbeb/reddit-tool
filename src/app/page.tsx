@@ -2,11 +2,9 @@
 
 import {
   FormEvent,
-  PointerEvent,
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import Image from "next/image";
@@ -14,6 +12,7 @@ import { supabase } from "@/lib/supabase";
 
 /* ─── Types ──────────────────────────────────────────────────── */
 type Status = "queued" | "working" | "done";
+type StatusFilter = "active" | "all" | Status;
 
 type TeamMember = {
   id: string;   // UUID from DB
@@ -134,12 +133,6 @@ function getChildComments(comments: RedditComment[], parentId?: string | null) {
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
-function isInteractiveElement(target: EventTarget | null) {
-  return target instanceof HTMLElement
-    ? Boolean(target.closest("button, input, select, textarea, a"))
-    : false;
-}
-
 const AVATAR_COLORS = [
   "#ff4500", "#6c63ff", "#22c55e", "#eab308",
   "#ec4899", "#06b6d4", "#f97316", "#a855f7",
@@ -217,7 +210,10 @@ export default function Home() {
   const [loginDraft, setLoginDraft] = useState({ slug: "mehdi", password: "" });
   const [loginError, setLoginError] = useState("");
   const [activeAssignee, setActiveAssignee] = useState("all");
-  const [activeStatus, setActiveStatus] = useState<"all" | Status>("all");
+  const [activeStatus, setActiveStatus] = useState<StatusFilter>("active");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isCreatePostOpen, setIsCreatePostOpen] = useState(false);
+  const [isTeamPanelOpen, setIsTeamPanelOpen] = useState(false);
   const [isSubmittingPost, setIsSubmittingPost] = useState(false);
   const [postDraft, setPostDraft] = useState({
     title: "", postBody: "", subredditUrl: "", assigneeId: "",
@@ -229,8 +225,6 @@ export default function Home() {
   const [postProofDrafts, setPostProofDrafts] = useState<Record<string, string>>({});
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
   const [openReplyComposerIds, setOpenReplyComposerIds] = useState<Record<string, boolean>>({});
-  const assignmentCanvasRef = useRef<HTMLDivElement>(null);
-  const assignmentDragRef = useRef({ isDragging: false, scrollLeft: 0, startX: 0 });
 
   /* ── Load team from DB ─────────────────────────────────────── */
   const loadTeam = useCallback(async () => {
@@ -256,7 +250,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from("reddit_posts")
       .select(`
-        id, title, post_body, subreddit_url, published_url,
+        id, title, post_body, subreddit_url,
         assignee_id, status, created_at,
         reddit_comments (
           id, body, assignee_id, status, created_at
@@ -395,19 +389,42 @@ export default function Home() {
   const pendingTaskCount = pendingTasks.length;
 
   const filteredPosts = useMemo(
-    () =>
-      posts.filter((post) => {
+    () => {
+      const normalizedSearch = searchQuery.trim().toLowerCase();
+
+      return posts.filter((post) => {
         const assigneeMatch =
           activeAssignee === "all" ||
           post.assigneeId === activeAssignee ||
           post.comments.some((c) => c.assigneeId === activeAssignee);
         const statusMatch =
-          activeStatus === "all" ||
-          post.status === activeStatus ||
-          post.comments.some((c) => c.status === activeStatus);
-        return assigneeMatch && statusMatch;
-      }),
-    [activeAssignee, activeStatus, posts],
+          activeStatus === "all"
+            ? true
+            : activeStatus === "active"
+              ? post.status !== "done" || post.comments.some((c) => c.status !== "done")
+              : post.status === activeStatus ||
+                post.comments.some((c) => c.status === activeStatus);
+        const searchMatch =
+          !normalizedSearch ||
+          [
+            post.title,
+            post.postBody,
+            post.subredditUrl,
+            getSubredditName(post.subredditUrl),
+            getMemberName(team, post.assigneeId),
+            ...post.comments.flatMap((comment) => [
+              comment.body,
+              getMemberName(team, comment.assigneeId),
+            ]),
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedSearch);
+
+        return assigneeMatch && statusMatch && searchMatch;
+      });
+    },
+    [activeAssignee, activeStatus, posts, searchQuery, team],
   );
 
   /* ── Handlers ─────────────────────────────────────────────── */
@@ -467,6 +484,8 @@ export default function Home() {
         setPostDraft({ title: "", postBody: "", subredditUrl: "", assigneeId });
         // Ensure admin filter shows all so the new post is visible
         setActiveAssignee("all");
+        setActiveStatus("active");
+        setIsCreatePostOpen(false);
         await loadPosts();
       }
     } finally {
@@ -502,7 +521,7 @@ export default function Home() {
     const dbChanges: Record<string, unknown> = {};
     if (changes.assigneeId !== undefined) dbChanges.assignee_id = changes.assigneeId;
     if (changes.status !== undefined)     dbChanges.status = changes.status;
-    if (changes.publishedUrl !== undefined) dbChanges.published_url = changes.publishedUrl;
+    // Omit published_url update to prevent 400 errors if the schema cache lacks the column
 
     await supabase.from("reddit_posts").update(dbChanges).eq("id", postId);
     await loadPosts();
@@ -563,36 +582,6 @@ export default function Home() {
   async function handleTeamNameChange(id: string, name: string) {
     setTeam((cur) => cur.map((m) => (m.id === id ? { ...m, name } : m)));
     await supabase.from("team_members").update({ display_name: name }).eq("id", id);
-  }
-
-  function handleAssignmentCanvasPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (isInteractiveElement(event.target)) return;
-    const canvas = assignmentCanvasRef.current;
-    if (!canvas) return;
-    assignmentDragRef.current = {
-      isDragging: true,
-      scrollLeft: canvas.scrollLeft,
-      startX: event.clientX,
-    };
-    canvas.setPointerCapture(event.pointerId);
-    canvas.classList.add("is-dragging");
-  }
-
-  function handleAssignmentCanvasPointerMove(event: PointerEvent<HTMLDivElement>) {
-    const canvas = assignmentCanvasRef.current;
-    const drag = assignmentDragRef.current;
-    if (!canvas || !drag.isDragging) return;
-    event.preventDefault();
-    canvas.scrollLeft = drag.scrollLeft - (event.clientX - drag.startX);
-  }
-
-  function handleAssignmentCanvasPointerEnd(event: PointerEvent<HTMLDivElement>) {
-    const canvas = assignmentCanvasRef.current;
-    assignmentDragRef.current.isDragging = false;
-    canvas?.classList.remove("is-dragging");
-    if (canvas?.hasPointerCapture(event.pointerId)) {
-      canvas.releasePointerCapture(event.pointerId);
-    }
   }
 
   /* ── Loading ─────────────────────────────────────────────── */
@@ -834,6 +823,35 @@ export default function Home() {
         }}
       >
         <div style={{ maxWidth: "1400px", margin: "0 auto", padding: "0 24px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "16px",
+              marginBottom: "16px",
+            }}
+          >
+            <div>
+              <h1 style={{ fontSize: "1.35rem", fontWeight: 900, lineHeight: 1.2 }}>
+                Assignment control
+              </h1>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.82rem", marginTop: "4px" }}>
+                Scan active Reddit work, open one task, then assign the next step.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPostError("");
+                setIsCreatePostOpen(true);
+              }}
+              className="btn-primary"
+              style={{ padding: "10px 18px", borderRadius: "999px", whiteSpace: "nowrap" }}
+            >
+              + New post
+            </button>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
             <MetricCard label="Posts"    value={stats.posts}    accent="var(--accent)" />
             <MetricCard label="Comments" value={stats.comments} accent="var(--indigo)" />
