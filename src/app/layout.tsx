@@ -10,6 +10,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Reddit Assignment Desk",
   description: "Assign Reddit posts, titles, subreddit links, and comments to your team — fast.",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({
