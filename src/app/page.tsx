@@ -259,12 +259,16 @@ export default function Home() {
         id, title, post_body, subreddit_url, published_url,
         assignee_id, status, created_at,
         reddit_comments (
-          id, body, assignee_id, status, created_at, parent_id
+          id, body, assignee_id, status, created_at
         )
       `)
       .order("created_at", { ascending: false });
 
-    if (error || !data) return;
+    if (error) {
+      console.error("[loadPosts] Supabase select error:", error);
+      return;
+    }
+    if (!data) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     setPosts(data.map((row: any) => dbPostToApp(row)));
@@ -477,7 +481,6 @@ export default function Home() {
 
     const { error } = await supabase.from("reddit_comments").insert({
       post_id: postId,
-      parent_id: parentId ?? null,
       body: draft.body.trim(),
       assignee_id: draft.assigneeId,
       status: "queued",
