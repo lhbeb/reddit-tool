@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Reddit Assignment Desk
 
-## Getting Started
+A Next.js app for assigning Reddit work to an 8-person team. It separates:
 
-First, run the development server:
+- Reddit title
+- Reddit post body
+- Subreddit link
+- Post assignee
+- Comment text
+- Comment assignee
+- Status for both posts and comments
+
+The current MVP stores data in the browser with `localStorage`, so you can use it right away. The data shape is ready for Supabase when you want team-wide shared data.
+
+## Local Login
+
+Choose a team member from the login dropdown and use this shared local password:
+
+```bash
+Localserver!!2
+```
+
+This is intentionally simple for local testing. Use Supabase Auth or another real auth provider before relying on it for a public production app.
+
+## Run Locally
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+## Vercel Deploy
+
+1. Push this folder to GitHub.
+2. Import the repo in Vercel.
+3. Framework preset: `Next.js`.
+4. Build command: `npm run build`.
+5. Output directory: leave default.
+
+## Supabase Upgrade Path
+
+When you are ready for shared online data:
+
+1. Create a Supabase project.
+2. Run `supabase/schema.sql` in the Supabase SQL editor.
+3. Add environment variables in Vercel:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+```
+
+4. Install the client:
+
+```bash
+npm install @supabase/supabase-js
+```
+
+5. Replace the `localStorage` reads and writes in `src/app/page.tsx` with Supabase queries.
+
+## DB Health Check
+
+After adding Supabase env vars, open:
+
+```bash
+http://localhost:3000/api/db-health
+```
+
+The endpoint returns JSON and prints a `[db-health]` line in the Next.js server logs showing whether the required tables and storage buckets exist.
+
+## Useful Scripts
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run build
+npm run lint
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
