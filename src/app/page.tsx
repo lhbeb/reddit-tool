@@ -133,6 +133,13 @@ function getChildComments(comments: RedditComment[], parentId?: string | null) {
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
+function getDescendantCommentCount(comments: RedditComment[], parentId: string): number {
+  const children = getChildComments(comments, parentId);
+  return children.reduce(
+    (count, child) => count + 1 + getDescendantCommentCount(comments, child.id),
+    0,
+  );
+}
 const AVATAR_COLORS = [
   "#ff4500", "#6c63ff", "#22c55e", "#eab308",
   "#ec4899", "#06b6d4", "#f97316", "#a855f7",
@@ -150,14 +157,96 @@ function initials(name: string) {
 }
 
 /* ─── DB row → app type mappers ──────────────────────────────── */
-function dbCommentToApp(row: {
+type DbCommentRow = {
   id: string;
   body: string;
   assignee_id: string | null;
   status: string;
   created_at: string;
-  parent_id: string | null;
-}): RedditComment {
+  parent_id?: string | null;
+};
+
+type DbPostRow = {
+  id: string;
+  title: string;
+  post_body: string;
+  subreddit_url: string | null;
+  published_url?: string | null;
+  assignee_id: string | null;
+  status: string;
+  created_at: string;
+  reddit_comments?: DbCommentRow[];
+};
+
+type SupabaseSelectPlan = {
+  label: string;
+  query: string;
+};
+
+type SupabaseErrorShape = {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+};
+
+const POST_SELECT_PLANS: SupabaseSelectPlan[] = [
+  {
+    label: "full",
+    query: `
+      id, title, post_body, subreddit_url, published_url,
+      assignee_id, status, created_at,
+      reddit_comments (
+        id, body, assignee_id, status, created_at, parent_id
+      )
+    `,
+  },
+  {
+    label: "without-comment-parent",
+    query: `
+      id, title, post_body, subreddit_url, published_url,
+      assignee_id, status, created_at,
+      reddit_comments (
+        id, body, assignee_id, status, created_at
+      )
+    `,
+  },
+  {
+    label: "without-post-link",
+    query: `
+      id, title, post_body, subreddit_url,
+      assignee_id, status, created_at,
+      reddit_comments (
+        id, body, assignee_id, status, created_at, parent_id
+      )
+    `,
+  },
+  {
+    label: "base",
+    query: `
+      id, title, post_body, subreddit_url,
+      assignee_id, status, created_at,
+      reddit_comments (
+        id, body, assignee_id, status, created_at
+      )
+    `,
+  },
+];
+
+function formatSupabaseError(error: unknown) {
+  if (!error || typeof error !== "object") return String(error ?? "Unknown Supabase error");
+  const shaped = error as SupabaseErrorShape;
+  const parts = [shaped.code, shaped.message, shaped.details, shaped.hint].filter(Boolean);
+  if (parts.length > 0) return parts.join(" | ");
+  try {
+    const json = JSON.stringify(error);
+    return json && json !== "{}" ? json : "Unknown Supabase error";
+  } catch {
+    return "Unknown Supabase error";
+  }
+}
+
+function dbCommentToApp(row: DbCommentRow): RedditComment {
   return {
     id: row.id,
     body: row.body,
@@ -168,24 +257,7 @@ function dbCommentToApp(row: {
   };
 }
 
-function dbPostToApp(row: {
-  id: string;
-  title: string;
-  post_body: string;
-  subreddit_url: string | null;
-  published_url: string | null;
-  assignee_id: string | null;
-  status: string;
-  created_at: string;
-  reddit_comments: Array<{
-    id: string;
-    body: string;
-    assignee_id: string | null;
-    status: string;
-    created_at: string;
-    parent_id: string | null;
-  }>;
-}): RedditPost {
+function dbPostToApp(row: DbPostRow): RedditPost {
   return {
     id: row.id,
     title: row.title,
@@ -198,7 +270,6 @@ function dbPostToApp(row: {
     comments: (row.reddit_comments ?? []).map(dbCommentToApp),
   };
 }
-
 /* ═══════════════════════════════════════════════════════════════
    Main Page
 ═══════════════════════════════════════════════════════════════ */
@@ -223,6 +294,7 @@ export default function Home() {
     Record<string, { body: string; assigneeId: string }>
   >({});
   const [postProofDrafts, setPostProofDrafts] = useState<Record<string, string>>({});
+  const [showDoneTasks, setShowDoneTasks] = useState(false);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
   const [openReplyComposerIds, setOpenReplyComposerIds] = useState<Record<string, boolean>>({});
 
@@ -247,27 +319,24 @@ export default function Home() {
 
   /* ── Load posts + nested comments from DB ──────────────────── */
   const loadPosts = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("reddit_posts")
-      .select(`
-        id, title, post_body, subreddit_url,
-        assignee_id, status, created_at,
-        reddit_comments (
-          id, body, assignee_id, status, created_at
-        )
-      `)
-      .order("created_at", { ascending: false });
+    let lastError: unknown = null;
 
-    if (error) {
-      console.error("[loadPosts] Supabase select error:", error);
-      return;
+    for (const plan of POST_SELECT_PLANS) {
+      const { data, error } = await supabase
+        .from("reddit_posts")
+        .select(plan.query)
+        .order("created_at", { ascending: false });
+
+      if (!error && data) {
+        setPosts((data as unknown as DbPostRow[]).map(dbPostToApp));
+        return;
+      }
+
+      lastError = error;
     }
-    if (!data) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    setPosts(data.map((row: any) => dbPostToApp(row)));
+    console.error("[loadPosts] Supabase select error:", formatSupabaseError(lastError));
   }, []);
-
   /* ── Bootstrap: team, session, posts ──────────────────────── */
   useEffect(() => {
     (async () => {
@@ -387,6 +456,26 @@ export default function Home() {
     [assignedTasks],
   );
   const pendingTaskCount = pendingTasks.length;
+  const memberPendingTasks = useMemo(
+    () =>
+      [...pendingTasks].sort((a, b) => {
+        const actionRank = (task: AssignedTask) => {
+          if (task.kind === "post") return 0;
+          return isUsableRedditLink(task.publishedUrl) ? 1 : 2;
+        };
+        const rankDiff = actionRank(a) - actionRank(b);
+        if (rankDiff !== 0) return rankDiff;
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }),
+    [pendingTasks],
+  );
+  const recentDoneTasks = useMemo(
+    () =>
+      [...doneTasks].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      ),
+    [doneTasks],
+  );
 
   const filteredPosts = useMemo(
     () => {
@@ -498,15 +587,18 @@ export default function Home() {
     const draft = commentDrafts[draftKey];
     if (!draft?.body.trim()) return;
 
-    const { error } = await supabase.from("reddit_comments").insert({
+    const insertPayload: Record<string, string> = {
       post_id: postId,
       body: draft.body.trim(),
       assignee_id: draft.assigneeId,
       status: "queued",
-    });
+    };
+    if (parentId) insertPayload.parent_id = parentId;
+
+    const { error } = await supabase.from("reddit_comments").insert(insertPayload);
 
     if (error) {
-      console.error("[create-comment]", error);
+      console.error("[create-comment]", formatSupabaseError(error));
       return;
     }
 
@@ -516,14 +608,17 @@ export default function Home() {
     }));
     await loadPosts();
   }
-
   async function updatePost(postId: string, changes: Partial<RedditPost>) {
     const dbChanges: Record<string, unknown> = {};
     if (changes.assigneeId !== undefined) dbChanges.assignee_id = changes.assigneeId;
     if (changes.status !== undefined)     dbChanges.status = changes.status;
-    // Omit published_url update to prevent 400 errors if the schema cache lacks the column
+    if (changes.publishedUrl !== undefined) dbChanges.published_url = changes.publishedUrl;
 
-    await supabase.from("reddit_posts").update(dbChanges).eq("id", postId);
+    const { error } = await supabase.from("reddit_posts").update(dbChanges).eq("id", postId);
+    if (error) {
+      console.error("[update-post]", formatSupabaseError(error));
+      return;
+    }
     await loadPosts();
   }
 
@@ -725,6 +820,11 @@ export default function Home() {
 
   /* ── Member View ─────────────────────────────────────────── */
   if (!isAdmin) {
+    const nextTaskText =
+      pendingTasks.length === 0
+        ? "No pending work"
+        : `${pendingTasks.length} task${pendingTasks.length === 1 ? "" : "s"} to finish`;
+
     return (
       <main style={{ minHeight: "100vh", background: "var(--bg-base)", color: "var(--text-primary)" }}>
         <TopNav
@@ -738,41 +838,36 @@ export default function Home() {
           style={{
             borderBottom: "1px solid var(--border)",
             background: "var(--bg-elevated)",
-            padding: "28px 0 24px",
+            padding: "22px 0",
           }}
         >
-          <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "0 24px" }}>
-            <h1 style={{ fontSize: "1.7rem", fontWeight: 900, lineHeight: 1.2 }}>Your tasks</h1>
-            <p
-              style={{
-                marginTop: "6px",
-                color: "var(--text-muted)",
-                fontSize: "0.88rem",
-                lineHeight: 1.6,
-              }}
-            >
-              New work from Mehdi Admin appears here. Do the task, then mark it done.
-            </p>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: "12px",
-                marginTop: "20px",
-              }}
-            >
-              <MetricCard label="To do"     value={pendingTasks.length}    accent="var(--accent)" />
-              <MetricCard label="Finished"  value={doneTasks.length}       accent="var(--green)" />
-              <MetricCard label="All tasks" value={assignedTasks.length}   accent="var(--indigo)" />
+          <div style={{ maxWidth: "940px", margin: "0 auto", padding: "0 20px" }}>
+            <div className="member-hero-row">
+              <div style={{ minWidth: 0 }}>
+                <p style={{ color: "var(--accent)", fontSize: "0.76rem", fontWeight: 850 }}>
+                  {nextTaskText}
+                </p>
+                <h1 style={{ marginTop: "5px", fontSize: "1.22rem", fontWeight: 900, lineHeight: 1.25 }}>
+                  Your queue
+                </h1>
+                <p style={{ marginTop: "5px", color: "var(--text-muted)", fontSize: "0.84rem", lineHeight: 1.55 }}>
+                  Open the first card, do the work on Reddit, then come back and press Mark done.
+                </p>
+              </div>
+
+              <div className="member-count-strip" aria-label="Task summary">
+                <MetricPill label="To do" value={pendingTasks.length} tone="accent" />
+                <MetricPill label="Done" value={doneTasks.length} tone="green" />
+              </div>
             </div>
           </div>
         </section>
 
-        <section style={{ maxWidth: "1100px", margin: "0 auto", padding: "24px" }}>
-          <div style={{ display: "grid", gap: "20px" }}>
+        <section style={{ maxWidth: "940px", margin: "0 auto", padding: "22px 20px 34px" }}>
+          <div style={{ display: "grid", gap: "14px" }}>
             <TaskSection
               copiedLinkId={copiedLinkId}
-              emptyText="No tasks to do right now. Check back soon!"
+              emptyText="Nothing to do right now. New tasks from Mehdi Admin will show up here."
               onCompletePostTask={completePostTask}
               onCopyLink={copyLinkToClipboard}
               onPostProofChange={(postId, value) =>
@@ -780,30 +875,172 @@ export default function Home() {
               }
               onStatusChange={updateAssignedTaskStatus}
               postProofDrafts={postProofDrafts}
-              tasks={pendingTasks}
+              tasks={memberPendingTasks}
               team={team}
-              title="Tasks to do"
+              title="Do these now"
+              tone="active"
             />
-            <TaskSection
-              copiedLinkId={copiedLinkId}
-              emptyText="Finished tasks will appear here."
-              onCompletePostTask={completePostTask}
-              onCopyLink={copyLinkToClipboard}
-              onPostProofChange={(postId, value) =>
-                setPostProofDrafts((cur) => ({ ...cur, [postId]: value }))
-              }
-              onStatusChange={updateAssignedTaskStatus}
-              postProofDrafts={postProofDrafts}
-              tasks={doneTasks}
-              team={team}
-              title="Finished"
-            />
+
+            <section
+              style={{
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: "12px",
+                overflow: "hidden",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setShowDoneTasks((value) => !value)}
+                className="done-toggle"
+                aria-expanded={showDoneTasks}
+              >
+                <span style={{ fontWeight: 850 }}>Finished tasks</span>
+                <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 800 }}>
+                  {doneTasks.length} {showDoneTasks ? "shown" : "hidden"} {showDoneTasks ? "▴" : "▾"}
+                </span>
+              </button>
+
+              {showDoneTasks && (
+                <TaskSection
+                  copiedLinkId={copiedLinkId}
+                  emptyText="Finished tasks will appear here."
+                  onCompletePostTask={completePostTask}
+                  onCopyLink={copyLinkToClipboard}
+                  onPostProofChange={(postId, value) =>
+                    setPostProofDrafts((cur) => ({ ...cur, [postId]: value }))
+                  }
+                  onStatusChange={updateAssignedTaskStatus}
+                  postProofDrafts={postProofDrafts}
+                  tasks={recentDoneTasks}
+                  team={team}
+                  title="Done"
+                  tone="done"
+                />
+              )}
+            </section>
           </div>
         </section>
+
+        <style>{`
+          .member-hero-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 16px;
+            align-items: center;
+          }
+
+          .member-count-strip {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+          }
+
+          .metric-pill {
+            min-width: 92px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--bg-card);
+            padding: 7px 11px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+          }
+
+          .done-toggle {
+            width: 100%;
+            border: 0;
+            background: transparent;
+            color: var(--text-primary);
+            padding: 13px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            text-align: left;
+          }
+
+          .member-task-card {
+            background: var(--bg-card);
+            padding: 16px;
+          }
+
+          .member-task-card.is-done {
+            opacity: 0.72;
+          }
+
+          .member-task-header,
+          .member-action-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+          }
+
+          .member-action-panel {
+            margin-top: 14px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px;
+          }
+
+          .member-proof-row {
+            margin-top: 10px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+          }
+
+          .member-flow-line {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            color: var(--text-muted);
+            font-size: 0.76rem;
+            font-weight: 800;
+          }
+
+          .member-flow-dot {
+            width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            display: grid;
+            place-items: center;
+            background: var(--accent-dim);
+            color: var(--accent);
+            font-size: 0.72rem;
+            font-weight: 900;
+          }
+
+          .member-flow-dot.ready {
+            background: var(--green-dim);
+            color: var(--green);
+          }
+
+          @media (max-width: 720px) {
+            .member-hero-row {
+              grid-template-columns: 1fr;
+            }
+
+            .member-count-strip {
+              justify-content: flex-start;
+            }
+
+            .member-proof-row {
+              grid-template-columns: 1fr;
+            }
+          }
+        `}</style>
       </main>
     );
   }
-
   /* ── Admin View ──────────────────────────────────────────── */
   return (
     <main style={{ minHeight: "100vh", background: "var(--bg-base)", color: "var(--text-primary)" }}>
@@ -1304,8 +1541,89 @@ export default function Home() {
       </section>
 
       <style>{`
+        .post-card-summary {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 14px;
+          align-items: start;
+        }
+
+        .post-card-actions {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .post-flow-strip,
+        .assignment-flow-strip,
+        .post-link-row {
+          display: flex;
+          align-items: stretch;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .post-flow-strip {
+          margin-top: 12px;
+        }
+
+        .post-flow-card,
+        .assignment-flow-item {
+          flex: 1 1 230px;
+          min-width: 0;
+          border: 1px solid var(--border);
+          background: var(--bg-elevated);
+          border-radius: 10px;
+          padding: 10px 12px;
+        }
+
+        .assignment-flow-item {
+          background: var(--bg-card);
+        }
+
+        .post-flow-arrow {
+          display: grid;
+          place-items: center;
+          color: var(--accent);
+          font-weight: 900;
+          padding: 0 2px;
+        }
+
+        .admin-controls-grid {
+          display: grid;
+          grid-template-columns: minmax(180px, 1fr) 140px auto;
+          gap: 8px;
+          align-items: center;
+        }
+
         @media (max-width: 900px) {
           .admin-grid { grid-template-columns: 1fr !important; }
+        }
+
+        @media (max-width: 760px) {
+          .post-card-summary {
+            grid-template-columns: 1fr;
+          }
+
+          .post-card-actions {
+            justify-content: flex-start;
+          }
+
+          .post-flow-arrow {
+            width: 100%;
+            justify-content: flex-start;
+            padding-left: 10px;
+          }
+
+          .admin-controls-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .admin-controls-grid > input {
+            grid-column: auto !important;
+          }
         }
       `}</style>
     </main>
@@ -1332,10 +1650,47 @@ function PostCard({
   onToggleReply: (commentId: string) => void;
 }) {
   const [showControls, setShowControls] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const commentAssigneeIds = getCommentAssigneeIds(post.comments);
+  const totalComments = post.comments.length;
+  const finishedComments = post.comments.filter((c) => c.status === "done").length;
+  const activeComments = post.comments.filter((c) => c.status !== "done").length;
+  const openComments = totalComments - finishedComments;
+  const rootComments = getChildComments(post.comments);
+  const postLinkReady = isUsableRedditLink(post.publishedUrl);
+  const commentAssigneeText =
+    totalComments > 0
+      ? getAssigneeList(team, commentAssigneeIds)
+      : "No comments assigned yet";
+  const commentProgressText =
+    totalComments === 0
+      ? "0 comments"
+      : activeComments === 0
+        ? "All comments done"
+        : `${activeComments} active comment${activeComments === 1 ? "" : "s"}`;
+  const expandedCommentProgressText =
+    totalComments > 0 ? `${finishedComments}/${totalComments} comments done` : "0 comments";
+  const commentStateText =
+    totalComments === 0
+      ? "Add comment assignments after the post task"
+      : openComments === 0
+        ? "All comments complete"
+        : `${openComments} comment${openComments === 1 ? "" : "s"} still open`;
+  const commentTone =
+    totalComments > 0 && openComments === 0
+      ? "var(--green)"
+      : totalComments > 0
+        ? "var(--yellow)"
+        : "var(--text-muted)";
   const glowClass =
     post.status === "done" ? "status-glow-done"
     : post.status === "working" ? "status-glow-working"
     : "status-glow-queued";
+
+  function toggleExpanded() {
+    if (isExpanded) setShowControls(false);
+    setIsExpanded((value) => !value);
+  }
 
   return (
     <article
@@ -1346,262 +1701,361 @@ function PostCard({
         background: "var(--bg-card)",
         border: "1px solid var(--border-bright)",
         overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
       }}
     >
-      <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
-          <span style={{ fontWeight: 800, fontSize: "0.82rem", color: "var(--accent)" }}>
-            {getSubredditName(post.subredditUrl)}
-          </span>
-          <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>•</span>
-          <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
-            assigned to {getMemberName(team, post.assigneeId)}
-          </span>
-          <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>•</span>
-          <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
-            {formatShortDate(post.createdAt)}
-          </span>
-          <StatusPill status={post.status} />
-        </div>
+      <div style={{ padding: "14px 16px" }}>
+        <div className="post-card-summary">
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontWeight: 800, fontSize: "0.82rem", color: "var(--accent)" }}>
+                {getSubredditName(post.subredditUrl)}
+              </span>
+              <StatusPill status={post.status} />
+              <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
+                {formatShortDate(post.createdAt)}
+              </span>
+              <span
+                style={{
+                  border: `1px solid ${postLinkReady ? "rgba(34,197,94,0.25)" : "rgba(234,179,8,0.22)"}`,
+                  background: postLinkReady ? "rgba(34,197,94,0.10)" : "rgba(234,179,8,0.10)",
+                  color: postLinkReady ? "#4ade80" : "#fbbf24",
+                  borderRadius: "999px",
+                  padding: "2px 8px",
+                  fontSize: "0.72rem",
+                  fontWeight: 800,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {postLinkReady ? "Post link ready" : "Waiting for post link"}
+              </span>
+            </div>
 
-        <h3
-          style={{
-            marginTop: "10px",
-            fontSize: "1.05rem",
-            fontWeight: 800,
-            lineHeight: 1.35,
-            color: "var(--text-primary)",
-          }}
-        >
-          {post.title}
-        </h3>
-
-        <p
-          style={{
-            marginTop: "10px",
-            whiteSpace: "pre-wrap",
-            fontSize: "0.88rem",
-            lineHeight: 1.75,
-            color: "var(--text-secondary)",
-          }}
-        >
-          {post.postBody}
-        </p>
-
-        {post.subredditUrl && (
-          <a
-            href={post.subredditUrl}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              marginTop: "10px",
-              display: "inline-block",
-              fontSize: "0.78rem",
-              fontWeight: 700,
-              color: "#60a5fa",
-              wordBreak: "break-all",
-            }}
-          >
-            {post.subredditUrl}
-          </a>
-        )}
-
-        <AssignmentFlow post={post} team={team} />
-
-        <button
-          type="button"
-          onClick={() => setShowControls((v) => !v)}
-          style={{
-            marginTop: "14px",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "6px",
-            fontSize: "0.75rem",
-            fontWeight: 700,
-            color: showControls ? "var(--accent)" : "var(--text-muted)",
-            background: "transparent",
-            border: "none",
-            padding: 0,
-            cursor: "pointer",
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-          }}
-        >
-          <span
-            style={{
-              display: "inline-block",
-              transition: "transform 200ms",
-              transform: showControls ? "rotate(90deg)" : "rotate(0deg)",
-            }}
-          >
-            ▶
-          </span>
-          Admin controls
-        </button>
-
-        {showControls && (
-          <div
-            style={{
-              marginTop: "10px",
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border)",
-              borderRadius: "10px",
-              padding: "14px",
-              display: "grid",
-              gridTemplateColumns: "1fr 140px auto",
-              gap: "8px",
-              alignItems: "center",
-            }}
-          >
-            <select
-              value={post.assigneeId}
-              onChange={(e) => onUpdatePost(post.id, { assigneeId: e.target.value })}
-              className="input"
-              style={{ height: "38px", fontSize: "0.82rem" }}
-              aria-label="Post assignee"
+            <h3
+              title={post.title}
+              style={{
+                marginTop: "9px",
+                fontSize: "1rem",
+                fontWeight: 850,
+                lineHeight: 1.35,
+                color: "var(--text-primary)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
             >
-              {team.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-            <select
-              value={post.status}
-              onChange={(e) => onUpdatePost(post.id, { status: e.target.value as Status })}
-              className="input"
-              style={{ height: "38px", fontSize: "0.82rem" }}
-              aria-label="Post status"
+              {post.title}
+            </h3>
+          </div>
+
+          <div className="post-card-actions">
+            <TeamMemberChip memberId={post.assigneeId} team={team} label="Post" />
+            <span
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elevated)",
+                color: commentTone,
+                borderRadius: "999px",
+                padding: "6px 10px",
+                fontSize: "0.76rem",
+                fontWeight: 800,
+                whiteSpace: "nowrap",
+              }}
             >
-              {Object.entries(statusLabels).map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
+              {commentProgressText}
+            </span>
             <button
               type="button"
-              onClick={() => onDeletePost(post.id)}
+              aria-expanded={isExpanded}
+              onClick={toggleExpanded}
+              className={isExpanded ? "btn-ghost" : "btn-primary"}
+              style={{ height: "34px", padding: "0 14px", fontSize: "0.78rem" }}
+            >
+              {isExpanded ? "Collapse" : "Expand"}
+            </button>
+          </div>
+        </div>
+
+        <div className="post-flow-strip" aria-label="Assignment path">
+          <div className="post-flow-card">
+            <p style={{ fontSize: "0.72rem", fontWeight: 800, color: "var(--text-muted)" }}>
+              1. Post + title
+            </p>
+            <div style={{ marginTop: "7px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <TeamMemberChip compact memberId={post.assigneeId} team={team} />
+              <span style={{ color: "var(--text-muted)", fontSize: "0.75rem", fontWeight: 700 }}>
+                {statusLabels[post.status]}
+              </span>
+            </div>
+          </div>
+
+          <span className="post-flow-arrow" aria-hidden="true">→</span>
+
+          <div className="post-flow-card">
+            <p style={{ fontSize: "0.72rem", fontWeight: 800, color: "var(--text-muted)" }}>
+              2. Comments
+            </p>
+            <p
+              title={commentAssigneeText}
               style={{
-                height: "38px",
-                padding: "0 12px",
-                borderRadius: "8px",
-                border: "1px solid rgba(255,69,0,0.3)",
-                background: "rgba(255,69,0,0.08)",
-                color: "#ff7043",
+                marginTop: "7px",
+                color: "var(--text-primary)",
+                fontSize: "0.8rem",
+                fontWeight: 800,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {commentAssigneeText}
+            </p>
+            <p style={{ marginTop: "3px", color: commentTone, fontSize: "0.74rem", fontWeight: 800 }}>
+              {commentStateText}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div style={{ borderTop: "1px solid var(--border)", background: "rgba(255,255,255,0.015)" }}>
+          <div style={{ padding: "16px 18px" }}>
+            <div style={{ display: "grid", gap: "12px" }}>
+              <section>
+                <p style={{ fontSize: "0.74rem", fontWeight: 800, color: "var(--text-muted)" }}>
+                  Post body
+                </p>
+                <p
+                  style={{
+                    marginTop: "6px",
+                    whiteSpace: "pre-wrap",
+                    fontSize: "0.88rem",
+                    lineHeight: 1.75,
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {post.postBody}
+                </p>
+              </section>
+
+              <div className="post-link-row">
+                {post.subredditUrl && (
+                  <a
+                    href={post.subredditUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-dark"
+                    style={{ fontSize: "0.76rem", padding: "7px 10px", wordBreak: "break-all" }}
+                  >
+                    Open subreddit
+                  </a>
+                )}
+                {postLinkReady ? (
+                  <a
+                    href={post.publishedUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-dark"
+                    style={{ fontSize: "0.76rem", padding: "7px 10px", wordBreak: "break-all" }}
+                  >
+                    Open Reddit post
+                  </a>
+                ) : (
+                  <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 700 }}>
+                    Final Reddit post link is still missing.
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <AssignmentFlow post={post} team={team} />
+
+            <button
+              type="button"
+              onClick={() => setShowControls((value) => !value)}
+              style={{
+                marginTop: "12px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
                 fontSize: "0.78rem",
-                fontWeight: 700,
+                fontWeight: 800,
+                color: showControls ? "var(--accent)" : "var(--text-muted)",
+                background: "transparent",
+                border: "none",
+                padding: 0,
                 cursor: "pointer",
               }}
             >
-              Delete
+              <span aria-hidden="true">{showControls ? "▾" : "▸"}</span>
+              Admin controls
             </button>
-            <input
-              value={post.publishedUrl ?? ""}
-              onChange={(e) => onUpdatePost(post.id, { publishedUrl: e.target.value })}
-              placeholder="Final Reddit post link"
-              className="input"
-              style={{ height: "38px", fontSize: "0.82rem", gridColumn: "1 / -1" }}
-            />
+
+            {showControls && (
+              <div
+                className="admin-controls-grid"
+                style={{
+                  marginTop: "10px",
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "10px",
+                  padding: "12px",
+                }}
+              >
+                <select
+                  value={post.assigneeId}
+                  onChange={(e) => onUpdatePost(post.id, { assigneeId: e.target.value })}
+                  className="input"
+                  style={{ height: "38px", fontSize: "0.82rem" }}
+                  aria-label="Post assignee"
+                >
+                  {team.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={post.status}
+                  onChange={(e) => onUpdatePost(post.id, { status: e.target.value as Status })}
+                  className="input"
+                  style={{ height: "38px", fontSize: "0.82rem" }}
+                  aria-label="Post status"
+                >
+                  {Object.entries(statusLabels).map(([v, l]) => (
+                    <option key={v} value={v}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => onDeletePost(post.id)}
+                  style={{
+                    height: "38px",
+                    padding: "0 12px",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(255,69,0,0.3)",
+                    background: "rgba(255,69,0,0.08)",
+                    color: "#ff7043",
+                    fontSize: "0.78rem",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Delete
+                </button>
+                <input
+                  value={post.publishedUrl ?? ""}
+                  onChange={(e) => onUpdatePost(post.id, { publishedUrl: e.target.value })}
+                  placeholder="Final Reddit post link"
+                  className="input"
+                  style={{ height: "38px", fontSize: "0.82rem", gridColumn: "1 / -1" }}
+                />
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* Comments */}
-      <div style={{ padding: "16px 18px", flex: 1 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "12px",
-          }}
-        >
-          <h4 style={{ fontWeight: 800, fontSize: "0.88rem" }}>Comments</h4>
-          <span
-            style={{
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border)",
-              borderRadius: "999px",
-              padding: "2px 10px",
-              fontSize: "0.75rem",
-              fontWeight: 700,
-              color: "var(--text-muted)",
-            }}
-          >
-            {post.comments.length}
-          </span>
-        </div>
-
-        <CommentComposer
-          assigneeId={commentDraft.assigneeId}
-          body={commentDraft.body}
-          buttonLabel="Add comment"
-          onAssigneeChange={(assigneeId) =>
-            onCommentDraftChange(post.id, { ...commentDraft, assigneeId })
-          }
-          onBodyChange={(body) => onCommentDraftChange(post.id, { ...commentDraft, body })}
-          onSubmit={() => onCreateComment(post.id)}
-          placeholder="Paste comment text"
-          team={team}
-        />
-
-        <div
-          style={{
-            marginTop: "12px",
-            background: "var(--bg-elevated)",
-            borderRadius: "10px",
-            padding: "10px",
-          }}
-        >
-          {getChildComments(post.comments).length === 0 ? (
-            <p
+          <div style={{ padding: "16px 18px", borderTop: "1px solid var(--border)" }}>
+            <div
               style={{
-                textAlign: "center",
-                padding: "16px",
-                fontSize: "0.82rem",
-                color: "var(--text-muted)",
-                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "12px",
+                marginBottom: "12px",
               }}
             >
-              No comments yet.
-            </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              {getChildComments(post.comments).map((comment) => (
-                <ThreadedComment
-                  key={comment.id}
-                  comment={comment}
-                  comments={post.comments}
-                  getDraft={(parentId) =>
-                    commentDrafts[getCommentDraftKey(post.id, parentId)] ?? {
-                      body: "",
-                      assigneeId: team[0]?.id ?? "",
-                    }
-                  }
-                  isReplyOpen={(commentId) => Boolean(openReplyComposerIds[commentId])}
-                  level={0}
-                  onCreateReply={(parentId) => {
-                    onCreateComment(post.id, parentId);
-                    onToggleReply(parentId);
-                  }}
-                  onDraftChange={(parentId, draftValue) =>
-                    onCommentDraftChange(getCommentDraftKey(post.id, parentId), draftValue)
-                  }
-                  onUpdateComment={(commentId, changes) =>
-                    onUpdateComment(post.id, commentId, changes)
-                  }
-                  onToggleReply={onToggleReply}
-                  postLinkReady={isUsableRedditLink(post.publishedUrl)}
-                  team={team}
-                />
-              ))}
+              <div>
+                <h4 style={{ fontWeight: 850, fontSize: "0.9rem" }}>Comments</h4>
+                <p style={{ marginTop: "2px", color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 700 }}>
+                  Assign comments under this post. Replies stay connected like a Reddit thread.
+                </p>
+              </div>
+              <span
+                style={{
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "999px",
+                  padding: "3px 10px",
+                  fontSize: "0.75rem",
+                  fontWeight: 800,
+                  color: commentTone,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {expandedCommentProgressText}
+              </span>
             </div>
-          )}
+
+            <CommentComposer
+              assigneeId={commentDraft.assigneeId}
+              body={commentDraft.body}
+              buttonLabel="Add comment"
+              onAssigneeChange={(assigneeId) =>
+                onCommentDraftChange(post.id, { ...commentDraft, assigneeId })
+              }
+              onBodyChange={(body) => onCommentDraftChange(post.id, { ...commentDraft, body })}
+              onSubmit={() => onCreateComment(post.id)}
+              placeholder="Paste comment text"
+              team={team}
+            />
+
+            <div
+              style={{
+                marginTop: "12px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border)",
+                borderRadius: "10px",
+                padding: "10px",
+              }}
+            >
+              {rootComments.length === 0 ? (
+                <p
+                  style={{
+                    textAlign: "center",
+                    padding: "16px",
+                    fontSize: "0.82rem",
+                    color: "var(--text-muted)",
+                    fontWeight: 700,
+                  }}
+                >
+                  No comments yet.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {rootComments.map((comment) => (
+                    <ThreadedComment
+                      key={comment.id}
+                      comment={comment}
+                      comments={post.comments}
+                      getDraft={(parentId) =>
+                        commentDrafts[getCommentDraftKey(post.id, parentId)] ?? {
+                          body: "",
+                          assigneeId: team[0]?.id ?? "",
+                        }
+                      }
+                      isReplyOpen={(commentId) => Boolean(openReplyComposerIds[commentId])}
+                      level={0}
+                      onCreateReply={(parentId) => {
+                        onCreateComment(post.id, parentId);
+                        onToggleReply(parentId);
+                      }}
+                      onDraftChange={(parentId, draftValue) =>
+                        onCommentDraftChange(getCommentDraftKey(post.id, parentId), draftValue)
+                      }
+                      onUpdateComment={(commentId, changes) =>
+                        onUpdateComment(post.id, commentId, changes)
+                      }
+                      onToggleReply={onToggleReply}
+                      postLinkReady={postLinkReady}
+                      team={team}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </article>
   );
 }
@@ -1736,6 +2190,69 @@ function MetricCard({ label, value, accent }: { label: string; value: number; ac
   );
 }
 
+function TeamMemberChip({
+  compact = false, label, memberId, team,
+}: {
+  compact?: boolean;
+  label?: string;
+  memberId: string;
+  team: TeamMember[];
+}) {
+  const memberIndex = team.findIndex((member) => member.id === memberId);
+  const colorIndex = memberIndex >= 0 ? memberIndex : 0;
+  const name = getMemberName(team, memberId);
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: compact ? "5px" : "6px",
+        border: "1px solid var(--border)",
+        background: "var(--bg-elevated)",
+        borderRadius: "999px",
+        padding: compact ? "3px 8px 3px 3px" : "4px 10px 4px 4px",
+        maxWidth: "100%",
+        minWidth: 0,
+      }}
+    >
+      {label && (
+        <span style={{ color: "var(--text-muted)", fontSize: "0.68rem", fontWeight: 800 }}>
+          {label}
+        </span>
+      )}
+      <span
+        aria-hidden="true"
+        style={{
+          width: compact ? "20px" : "24px",
+          height: compact ? "20px" : "24px",
+          borderRadius: "50%",
+          background: avatarColor(colorIndex),
+          display: "grid",
+          placeItems: "center",
+          color: "#fff",
+          fontSize: compact ? "0.58rem" : "0.62rem",
+          fontWeight: 900,
+          flexShrink: 0,
+        }}
+      >
+        {initials(name)}
+      </span>
+      <span
+        style={{
+          color: "var(--text-primary)",
+          fontSize: compact ? "0.74rem" : "0.78rem",
+          fontWeight: 800,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {name}
+      </span>
+    </span>
+  );
+}
 function StatusPill({ status }: { status: Status }) {
   const config: Record<Status, { label: string; bg: string; color: string }> = {
     queued:  { label: "🔴 Queued",  bg: "rgba(255,69,0,0.12)",  color: "#ff7043" },
@@ -1766,7 +2283,11 @@ function StatusPill({ status }: { status: Status }) {
 function AssignmentFlow({ post, team }: { post: RedditPost; team: TeamMember[] }) {
   const commentAssigneeIds = getCommentAssigneeIds(post.comments);
   const finishedComments = post.comments.filter((c) => c.status === "done").length;
+  const totalComments = post.comments.length;
   const postLinkReady = isUsableRedditLink(post.publishedUrl);
+  const commentAssignees =
+    totalComments > 0 ? getAssigneeList(team, commentAssigneeIds) : "Add comment assignments";
+  const commentsReady = totalComments > 0 && finishedComments === totalComments;
 
   return (
     <div
@@ -1775,226 +2296,90 @@ function AssignmentFlow({ post, team }: { post: RedditPost; team: TeamMember[] }
         background: "var(--bg-elevated)",
         border: "1px solid var(--border)",
         borderRadius: "10px",
-        padding: "12px",
-      }}
-    >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr auto 1fr",
-          gap: "8px",
-          alignItems: "stretch",
-        }}
-      >
-        <FlowStep
-          helper={
-            postLinkReady
-              ? "Final Reddit link is ready for commenters."
-              : "Needs final Reddit post link from assignee."
-          }
-          isReady={post.status === "done" && postLinkReady}
-          label="Post + title"
-          person={getMemberName(team, post.assigneeId)}
-          step="1"
-          status={statusLabels[post.status]}
-        />
-        <div
-          style={{
-            display: "grid",
-            placeItems: "center",
-            fontSize: "1.1rem",
-            fontWeight: 900,
-            color: "var(--accent)",
-            padding: "0 4px",
-          }}
-        >
-          →
-        </div>
-        <FlowStep
-          helper={
-            postLinkReady
-              ? "Comment assignees can open the Reddit post."
-              : "Comment assignees wait until the post link is added."
-          }
-          isReady={post.comments.length > 0 && finishedComments === post.comments.length}
-          label="Comments"
-          person={
-            post.comments.length > 0
-              ? getAssigneeList(team, commentAssigneeIds)
-              : "Add comment assignments below"
-          }
-          step="2"
-          status={
-            post.comments.length > 0
-              ? `${finishedComments}/${post.comments.length} done`
-              : "0 assigned"
-          }
-        />
-      </div>
-    </div>
-  );
-}
-
-function MemberTaskFlow({ task, team }: { task: AssignedTask; team: TeamMember[] }) {
-  const isPostTask = task.kind === "post";
-  const postLinkReady = isUsableRedditLink(task.publishedUrl);
-  const commentPeople =
-    task.commentAssigneeIds.length > 0
-      ? getAssigneeList(team, task.commentAssigneeIds)
-      : "Comment team";
-
-  return (
-    <div
-      style={{
-        marginTop: "12px",
-        background: "var(--bg-elevated)",
-        border: "1px solid var(--border)",
-        borderRadius: "10px",
-        padding: "12px",
-        display: "grid",
-        gridTemplateColumns: "1fr auto 1fr",
-        gap: "8px",
-        alignItems: "stretch",
-      }}
-    >
-      <FlowStep
-        compact
-        helper={
-          isPostTask
-            ? "Publish the title and post, then paste the Reddit link."
-            : postLinkReady
-              ? "Post link is ready."
-              : "Waiting for this person to add the post link."
-        }
-        isReady={!isPostTask && postLinkReady}
-        label="Post + title"
-        person={isPostTask ? "You" : getMemberName(team, task.postAssigneeId)}
-        step="1"
-        status={isPostTask ? "Your step" : postLinkReady ? "Ready" : "Waiting"}
-      />
-      <div
-        style={{
-          display: "grid",
-          placeItems: "center",
-          fontSize: "1rem",
-          fontWeight: 900,
-          color: "var(--accent)",
-          padding: "0 4px",
-        }}
-      >
-        →
-      </div>
-      <FlowStep
-        compact
-        helper={
-          isPostTask
-            ? "These people use your link after you finish."
-            : postLinkReady
-              ? "Open or copy the link, comment, then mark done."
-              : "This unlocks after the post link exists."
-        }
-        isReady={task.status === "done"}
-        label={isPostTask ? "Comments" : "Your comment"}
-        person={isPostTask ? commentPeople : "You"}
-        step="2"
-        status={
-          isPostTask
-            ? task.commentAssigneeIds.length > 0
-              ? "Next"
-              : "Not assigned yet"
-            : task.status === "done"
-              ? "Done"
-              : postLinkReady
-                ? "Do now"
-                : "Locked"
-        }
-      />
-    </div>
-  );
-}
-
-function FlowStep({
-  compact = false, helper, isReady, label, person, status, step,
-}: {
-  compact?: boolean;
-  helper: string;
-  isReady: boolean;
-  label: string;
-  person: string;
-  status: string;
-  step: string;
-}) {
-  return (
-    <div
-      style={{
-        background: "var(--bg-card)",
-        border: `1px solid ${isReady ? "rgba(34,197,94,0.3)" : "var(--border)"}`,
-        borderRadius: "8px",
         padding: "10px 12px",
       }}
     >
-      <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
-        <span
-          style={{
-            flexShrink: 0,
-            width: "26px",
-            height: "26px",
-            borderRadius: "50%",
-            background: isReady ? "var(--green)" : "var(--accent)",
-            display: "grid",
-            placeItems: "center",
-            fontSize: "0.7rem",
-            fontWeight: 900,
-            color: "#fff",
-          }}
-        >
-          {isReady ? "✓" : step}
-        </span>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px" }}>
-            <p
-              style={{
-                fontWeight: 800,
-                fontSize: compact ? "0.78rem" : "0.85rem",
-                color: "var(--text-primary)",
-              }}
-            >
-              {label}
-            </p>
+      <p style={{ color: "var(--text-muted)", fontSize: "0.74rem", fontWeight: 800 }}>
+        Assignment path
+      </p>
+      <div className="assignment-flow-strip" style={{ marginTop: "8px" }}>
+        <div className="assignment-flow-item">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+            <span style={{ color: "var(--text-primary)", fontSize: "0.8rem", fontWeight: 850 }}>
+              1. Post + title
+            </span>
+            <StatusPill status={post.status} />
+          </div>
+          <div style={{ marginTop: "8px" }}>
+            <TeamMemberChip compact memberId={post.assigneeId} team={team} />
+          </div>
+          <p style={{ marginTop: "6px", color: "var(--text-muted)", fontSize: "0.73rem", lineHeight: 1.45 }}>
+            {postLinkReady ? "The final Reddit link is ready." : "This person still needs to paste the Reddit post link."}
+          </p>
+        </div>
+
+        <span className="post-flow-arrow" aria-hidden="true">→</span>
+
+        <div className="assignment-flow-item">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+            <span style={{ color: "var(--text-primary)", fontSize: "0.8rem", fontWeight: 850 }}>
+              2. Comments
+            </span>
             <span
               style={{
-                background: "var(--bg-elevated)",
-                border: "1px solid var(--border)",
-                borderRadius: "999px",
-                padding: "1px 8px",
-                fontSize: "0.68rem",
-                fontWeight: 700,
-                color: "var(--text-muted)",
+                color: commentsReady ? "var(--green)" : totalComments > 0 ? "var(--yellow)" : "var(--text-muted)",
+                fontSize: "0.74rem",
+                fontWeight: 850,
+                whiteSpace: "nowrap",
               }}
             >
-              {status}
+              {totalComments > 0 ? `${finishedComments}/${totalComments} done` : "0 assigned"}
             </span>
           </div>
           <p
+            title={commentAssignees}
             style={{
-              marginTop: "3px",
-              fontSize: "0.78rem",
-              fontWeight: 700,
+              marginTop: "8px",
               color: "var(--text-primary)",
-              wordBreak: "break-word",
+              fontSize: "0.78rem",
+              fontWeight: 800,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
-            {person}
+            {commentAssignees}
           </p>
-          <p style={{ marginTop: "3px", fontSize: "0.72rem", lineHeight: 1.5, color: "var(--text-muted)" }}>
-            {helper}
+          <p style={{ marginTop: "6px", color: "var(--text-muted)", fontSize: "0.73rem", lineHeight: 1.45 }}>
+            {postLinkReady ? "Comment assignees can open the post and work." : "Comment work waits until the post link exists."}
           </p>
         </div>
       </div>
     </div>
   );
 }
+function MemberTaskFlow({ task, team }: { task: AssignedTask; team: TeamMember[] }) {
+  const isPostTask = task.kind === "post";
+  const postLinkReady = isUsableRedditLink(task.publishedUrl);
+  const stepOneReady = isPostTask ? task.status === "done" && postLinkReady : postLinkReady;
+  const stepTwoReady = task.status === "done";
+  const postPerson = isPostTask ? "you" : getMemberName(team, task.postAssigneeId);
+  const commentPerson = isPostTask ? getAssigneeList(team, task.commentAssigneeIds) : "you";
 
+  return (
+    <div className="member-flow-line" aria-label="Task order">
+      <span className={`member-flow-dot ${stepOneReady ? "ready" : ""}`}>
+        {stepOneReady ? "✓" : "1"}
+      </span>
+      <span>Post: {postPerson}</span>
+      <span style={{ color: "var(--accent)", fontWeight: 900 }}>→</span>
+      <span className={`member-flow-dot ${stepTwoReady ? "ready" : ""}`}>
+        {stepTwoReady ? "✓" : "2"}
+      </span>
+      <span>{isPostTask ? "Then comments" : "Your comment"}: {commentPerson}</span>
+    </div>
+  );
+}
 function NotificationBell({ count }: { count: number }) {
   const hasPending = count > 0;
   return (
@@ -2081,13 +2466,14 @@ function CommentComposer({
 }) {
   return (
     <div
+      className="comment-composer"
       style={{
         background: "var(--bg-elevated)",
         border: "1px solid var(--border)",
         borderRadius: "10px",
         padding: "12px",
         display: "grid",
-        gridTemplateColumns: "1fr 150px auto",
+        gridTemplateColumns: "minmax(0, 1fr) 150px auto",
         gap: "8px",
       }}
     >
@@ -2139,20 +2525,26 @@ function ThreadedComment({
   team: TeamMember[];
 }) {
   const childComments = getChildComments(comments, comment.id);
+  const hiddenReplyCount = getDescendantCommentCount(comments, comment.id);
   const draft = getDraft(comment.id);
   const replyOpen = isReplyOpen(comment.id);
+  const [showReplies, setShowReplies] = useState(level < 1);
+  const shouldCollapseReplies = level >= 1 && childComments.length > 0;
+  const shouldShowReplies = childComments.length > 0 && (!shouldCollapseReplies || showReplies);
+  const branchColor = level === 0 ? "rgba(255,69,0,0.34)" : "rgba(255,255,255,0.16)";
 
   return (
-    <div style={{ paddingLeft: level > 0 ? "20px" : "0" }}>
+    <div style={{ paddingLeft: level > 0 ? "18px" : "0" }}>
       <div
         style={{
           position: "relative",
-          borderLeft: "2px solid rgba(255,69,0,0.25)",
+          borderLeft: `2px solid ${branchColor}`,
           paddingLeft: "14px",
-          marginBottom: "4px",
+          marginBottom: "5px",
         }}
       >
         <span
+          aria-hidden="true"
           style={{
             position: "absolute",
             left: "-5px",
@@ -2160,7 +2552,7 @@ function ThreadedComment({
             width: "8px",
             height: "8px",
             borderRadius: "50%",
-            background: "var(--accent)",
+            background: level === 0 ? "var(--accent)" : "var(--text-muted)",
           }}
         />
 
@@ -2182,13 +2574,15 @@ function ThreadedComment({
               justifyContent: "space-between",
             }}
           >
-            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", fontWeight: 600 }}>
-              assigned to{" "}
-              <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>
-                {getMemberName(team, comment.assigneeId)}
-              </span>{" "}
-              • {formatShortDate(comment.createdAt)}
-            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", minWidth: 0 }}>
+              <TeamMemberChip compact memberId={comment.assigneeId} team={team} />
+              <span style={{ color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 700 }}>
+                {level === 0 ? "Comment" : `Reply level ${level}`}
+              </span>
+              <span style={{ color: "var(--text-muted)", fontSize: "0.72rem" }}>
+                {formatShortDate(comment.createdAt)}
+              </span>
+            </div>
             <StatusPill status={comment.status} />
           </div>
 
@@ -2213,7 +2607,7 @@ function ThreadedComment({
               alignItems: "center",
             }}
           >
-            <div style={{ display: "flex", gap: "6px", flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", gap: "6px", flex: 1, minWidth: "220px" }}>
               <select
                 value={comment.assigneeId}
                 onChange={(e) => onUpdateComment(comment.id, { assigneeId: e.target.value })}
@@ -2243,11 +2637,11 @@ function ThreadedComment({
                 ))}
               </select>
             </div>
-            <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
               <span
                 style={{
                   fontSize: "0.7rem",
-                  fontWeight: 700,
+                  fontWeight: 800,
                   background: postLinkReady
                     ? "rgba(96,165,250,0.12)"
                     : "rgba(234,179,8,0.12)",
@@ -2258,12 +2652,17 @@ function ThreadedComment({
               >
                 {postLinkReady ? "Ready to comment" : "Waiting for post link"}
               </span>
+              {childComments.length > 0 && (
+                <span style={{ color: "var(--text-muted)", fontSize: "0.7rem", fontWeight: 800 }}>
+                  {hiddenReplyCount} repl{hiddenReplyCount === 1 ? "y" : "ies"}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => onToggleReply(comment.id)}
                 style={{
                   fontSize: "0.75rem",
-                  fontWeight: 700,
+                  fontWeight: 800,
                   background: "transparent",
                   border: "none",
                   color: replyOpen ? "var(--accent)" : "var(--text-muted)",
@@ -2271,30 +2670,56 @@ function ThreadedComment({
                   padding: "2px 0",
                 }}
               >
-                {replyOpen ? "✕ Cancel" : "↩ Reply"}
+                {replyOpen ? "Cancel" : "Reply"}
               </button>
             </div>
           </div>
-
-          {replyOpen && (
-            <div style={{ marginTop: "10px" }}>
-              <CommentComposer
-                assigneeId={draft.assigneeId}
-                body={draft.body}
-                buttonLabel="Reply"
-                onAssigneeChange={(assigneeId) =>
-                  onDraftChange(comment.id, { ...draft, assigneeId })
-                }
-                onBodyChange={(body) => onDraftChange(comment.id, { ...draft, body })}
-                onSubmit={() => onCreateReply(comment.id)}
-                placeholder="Reply to this comment"
-                team={team}
-              />
-            </div>
-          )}
         </div>
 
-        {childComments.length > 0 && (
+        {replyOpen && (
+          <div style={{ margin: "8px 0 8px" }}>
+            <CommentComposer
+              assigneeId={draft.assigneeId}
+              body={draft.body}
+              buttonLabel="Reply"
+              onAssigneeChange={(assigneeId) =>
+                onDraftChange(comment.id, { ...draft, assigneeId })
+              }
+              onBodyChange={(body) => onDraftChange(comment.id, { ...draft, body })}
+              onSubmit={() => onCreateReply(comment.id)}
+              placeholder="Reply to this comment"
+              team={team}
+            />
+          </div>
+        )}
+
+        {shouldCollapseReplies && (
+          <button
+            type="button"
+            onClick={() => setShowReplies((value) => !value)}
+            style={{
+              margin: "4px 0 8px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: "999px",
+              color: showReplies ? "var(--accent)" : "var(--text-muted)",
+              fontSize: "0.75rem",
+              fontWeight: 850,
+              padding: "5px 10px",
+              cursor: "pointer",
+            }}
+          >
+            <span aria-hidden="true">{showReplies ? "▴" : "▾"}</span>
+            {showReplies
+              ? "Hide replies"
+              : `Show ${hiddenReplyCount} repl${hiddenReplyCount === 1 ? "y" : "ies"}`}
+          </button>
+        )}
+
+        {shouldShowReplies && (
           <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
             {childComments.map((child) => (
               <ThreadedComment
@@ -2318,10 +2743,19 @@ function ThreadedComment({
     </div>
   );
 }
+function MetricPill({ label, tone, value }: { label: string; tone: "accent" | "green"; value: number }) {
+  const color = tone === "accent" ? "var(--accent)" : "var(--green)";
+  return (
+    <div className="metric-pill">
+      <span style={{ color: "var(--text-muted)", fontSize: "0.75rem", fontWeight: 800 }}>{label}</span>
+      <span style={{ color, fontSize: "0.95rem", fontWeight: 900 }}>{value}</span>
+    </div>
+  );
+}
 
 function TaskSection({
   copiedLinkId, emptyText, onCompletePostTask, onCopyLink, onPostProofChange,
-  onStatusChange, postProofDrafts, tasks, team, title,
+  onStatusChange, postProofDrafts, tasks, team, title, tone = "active",
 }: {
   copiedLinkId: string | null;
   emptyText: string;
@@ -2333,50 +2767,61 @@ function TaskSection({
   tasks: AssignedTask[];
   team: TeamMember[];
   title: string;
+  tone?: "active" | "done";
 }) {
+  const isDoneSection = tone === "done";
+
   return (
     <section
       style={{
         background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        borderRadius: "14px",
+        border: isDoneSection ? "0" : "1px solid var(--border)",
+        borderRadius: isDoneSection ? 0 : "12px",
         overflow: "hidden",
       }}
     >
-      <div
-        style={{
-          padding: "14px 18px",
-          borderBottom: "1px solid var(--border)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>{title}</h2>
-        <span
+      {!isDoneSection && (
+        <div
           style={{
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border)",
-            borderRadius: "999px",
-            padding: "2px 12px",
-            fontSize: "0.75rem",
-            fontWeight: 700,
-            color: "var(--text-muted)",
+            padding: "13px 16px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
           }}
         >
-          {tasks.length}
-        </span>
-      </div>
+          <div>
+            <h2 style={{ fontWeight: 850, fontSize: "0.98rem" }}>{title}</h2>
+            <p style={{ marginTop: "2px", color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 700 }}>
+              Finish these cards first. No guessing, one clear button per task.
+            </p>
+          </div>
+          <span
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border)",
+              borderRadius: "999px",
+              padding: "3px 11px",
+              fontSize: "0.75rem",
+              fontWeight: 850,
+              color: tasks.length > 0 ? "var(--accent)" : "var(--text-muted)",
+            }}
+          >
+            {tasks.length}
+          </span>
+        </div>
+      )}
 
       {tasks.length === 0 ? (
-        <div style={{ padding: "32px", textAlign: "center" }}>
-          <span style={{ fontSize: "2rem" }}>✅</span>
+        <div style={{ padding: isDoneSection ? "24px" : "30px", textAlign: "center" }}>
+          <span style={{ fontSize: "1.8rem" }}>✓</span>
           <p
             style={{
               marginTop: "8px",
-              fontSize: "0.85rem",
+              fontSize: "0.84rem",
               color: "var(--text-muted)",
-              fontWeight: 600,
+              fontWeight: 700,
             }}
           >
             {emptyText}
@@ -2395,65 +2840,51 @@ function TaskSection({
             const proofValue = postProofDrafts[task.postId] ?? task.publishedUrl ?? "";
             const proofReady = isUsableRedditLink(proofValue);
             const postLinkReady = isUsableRedditLink(task.publishedUrl);
+            const isDone = task.status === "done";
+            const isPostTask = task.kind === "post";
             const glowClass =
               task.status === "done" ? "status-glow-done"
               : task.status === "working" ? "status-glow-working"
               : "status-glow-queued";
+            const actionTitle = isPostTask
+              ? "Post on Reddit"
+              : postLinkReady
+                ? "Comment on Reddit"
+                : "Waiting for post link";
+            const actionHelp = isPostTask
+              ? "Paste the final Reddit post link here. This unlocks the comment team."
+              : postLinkReady
+                ? "Open the Reddit post, add your comment, then mark this task done."
+                : `Waiting for ${getMemberName(team, task.postAssigneeId)} to paste the Reddit post link.`;
 
             return (
               <article
                 key={task.id}
-                className={glowClass}
-                style={{ background: "var(--bg-card)", padding: "18px" }}
+                className={`${glowClass} member-task-card ${isDone ? "is-done" : ""}`}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    gap: "8px",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" }}>
-                    <span
-                      style={{
-                        fontWeight: 800,
-                        fontSize: "0.78rem",
-                        color: "var(--accent)",
-                      }}
-                    >
+                <div className="member-task-header">
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "7px", alignItems: "center", minWidth: 0 }}>
+                    <span style={{ fontWeight: 850, fontSize: "0.78rem", color: "var(--accent)" }}>
                       {getSubredditName(task.subredditUrl)}
                     </span>
-                    <span style={{ color: "var(--text-muted)", fontSize: "0.72rem" }}>•</span>
                     <span
                       style={{
                         fontSize: "0.72rem",
-                        background:
-                          task.kind === "post" ? "var(--accent-dim)" : "var(--indigo-dim)",
-                        color: task.kind === "post" ? "#ff7043" : "var(--indigo)",
+                        background: isPostTask ? "var(--accent-dim)" : "var(--indigo-dim)",
+                        color: isPostTask ? "#ff7043" : "var(--indigo)",
                         borderRadius: "999px",
-                        padding: "1px 8px",
-                        fontWeight: 700,
+                        padding: "2px 8px",
+                        fontWeight: 850,
                       }}
                     >
-                      {task.kind === "post" ? "📝 Post task" : "💬 Comment task"}
+                      {isPostTask ? "Post task" : "Comment task"}
                     </span>
-                    <span style={{ color: "var(--text-muted)", fontSize: "0.72rem" }}>
-                      {formatShortDate(task.createdAt)}
-                    </span>
+                    <TeamMemberChip compact memberId={task.assigneeId} team={team} />
                   </div>
                   <StatusPill status={task.status} />
                 </div>
 
-                <h3
-                  style={{
-                    marginTop: "10px",
-                    fontSize: "1rem",
-                    fontWeight: 800,
-                    lineHeight: 1.35,
-                  }}
-                >
+                <h3 style={{ marginTop: "9px", fontSize: "0.98rem", fontWeight: 850, lineHeight: 1.35 }}>
                   {task.title}
                 </h3>
 
@@ -2461,179 +2892,121 @@ function TaskSection({
 
                 <p
                   style={{
-                    marginTop: "12px",
+                    marginTop: "11px",
                     whiteSpace: "pre-wrap",
-                    fontSize: "0.85rem",
-                    lineHeight: 1.75,
+                    fontSize: "0.84rem",
+                    lineHeight: 1.7,
                     color: "var(--text-secondary)",
                   }}
                 >
                   {task.body}
                 </p>
 
-                {task.kind === "post" ? (
-                  <div
-                    style={{
-                      marginTop: "16px",
-                      background: "var(--bg-elevated)",
-                      border: "1px solid var(--border)",
-                      borderRadius: "10px",
-                      padding: "14px",
-                    }}
-                  >
-                    <p style={{ fontWeight: 800, fontSize: "0.85rem" }}>Completion proof</p>
-                    <p
-                      style={{
-                        marginTop: "4px",
-                        fontSize: "0.78rem",
-                        color: "var(--text-muted)",
-                        lineHeight: 1.6,
-                      }}
-                    >
-                      Publish the post on Reddit, paste the final link, then press Mark done.
-                    </p>
-                    <input
-                      value={proofValue}
-                      onChange={(e) => onPostProofChange(task.postId, e.target.value)}
-                      placeholder="https://www.reddit.com/r/.../comments/..."
-                      className="input"
-                      style={{ marginTop: "10px", height: "40px", fontSize: "0.82rem" }}
-                    />
-                    <p
-                      style={{
-                        marginTop: "6px",
-                        fontSize: "0.75rem",
-                        fontWeight: 700,
-                        color: proofReady ? "var(--green)" : "#ff7043",
-                      }}
-                    >
-                      {proofReady
-                        ? "✓ Link ready — mark done to notify comment assignees."
-                        : "Paste a valid Reddit post link before marking done."}
-                    </p>
-                    {postLinkReady && task.publishedUrl && (
-                      <a
-                        href={task.publishedUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{
-                          marginTop: "6px",
-                          display: "block",
-                          fontSize: "0.75rem",
-                          fontWeight: 700,
-                          color: "#60a5fa",
-                          wordBreak: "break-all",
-                        }}
+                <div className="member-action-panel">
+                  <div className="member-action-row">
+                    <div>
+                      <p style={{ fontWeight: 850, fontSize: "0.84rem" }}>{actionTitle}</p>
+                      <p style={{ marginTop: "3px", fontSize: "0.76rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                        {actionHelp}
+                      </p>
+                    </div>
+                    {isDone && (
+                      <button
+                        type="button"
+                        onClick={() => onStatusChange(task, "queued")}
+                        className="btn-ghost"
+                        style={{ borderRadius: "999px", padding: "7px 14px", fontSize: "0.78rem" }}
                       >
-                        Posted: {task.publishedUrl}
-                      </a>
+                        Move back
+                      </button>
                     )}
                   </div>
-                ) : (
-                  <div
-                    style={{
-                      marginTop: "16px",
-                      background: "var(--bg-elevated)",
-                      border: "1px solid var(--border)",
-                      borderRadius: "10px",
-                      padding: "14px",
-                    }}
-                  >
-                    <p style={{ fontWeight: 800, fontSize: "0.85rem" }}>Reddit post link</p>
-                    {postLinkReady && task.publishedUrl ? (
-                      <div
+
+                  {isPostTask ? (
+                    <>
+                      <div className="member-proof-row">
+                        <input
+                          value={proofValue}
+                          onChange={(e) => onPostProofChange(task.postId, e.target.value)}
+                          placeholder="https://www.reddit.com/r/.../comments/..."
+                          className="input"
+                          disabled={isDone}
+                          style={{ height: "40px", fontSize: "0.82rem" }}
+                        />
+                        {!isDone && (
+                          <button
+                            type="button"
+                            onClick={() => onCompletePostTask(task, proofValue)}
+                            disabled={!proofReady}
+                            className="btn-primary"
+                            style={{ borderRadius: "999px", padding: "8px 18px", whiteSpace: "nowrap" }}
+                          >
+                            Mark done
+                          </button>
+                        )}
+                      </div>
+                      <p
                         style={{
-                          marginTop: "10px",
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: "8px",
+                          marginTop: "7px",
+                          fontSize: "0.75rem",
+                          fontWeight: 800,
+                          color: proofReady ? "var(--green)" : "#ff7043",
                         }}
                       >
+                        {proofReady ? "Link ready." : "Paste a valid Reddit post link first."}
+                      </p>
+                      {postLinkReady && task.publishedUrl && (
                         <a
                           href={task.publishedUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="btn-primary"
                           style={{
-                            fontSize: "0.82rem",
-                            padding: "8px 18px",
-                            borderRadius: "999px",
-                            textDecoration: "none",
+                            marginTop: "7px",
+                            display: "inline-block",
+                            fontSize: "0.75rem",
+                            fontWeight: 800,
+                            color: "#60a5fa",
+                            wordBreak: "break-all",
                           }}
                         >
-                          Open post →
+                          Open posted link
                         </a>
+                      )}
+                    </>
+                  ) : postLinkReady && task.publishedUrl ? (
+                    <div style={{ marginTop: "10px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                      <a
+                        href={task.publishedUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="btn-primary"
+                        style={{ fontSize: "0.8rem", padding: "8px 16px", borderRadius: "999px", textDecoration: "none" }}
+                      >
+                        Open post
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => onCopyLink(task.id, task.publishedUrl)}
+                        className="btn-ghost"
+                        style={{ borderRadius: "999px", padding: "8px 16px", fontSize: "0.8rem" }}
+                      >
+                        {copiedLinkId === task.id ? "Copied" : "Copy link"}
+                      </button>
+                      {!isDone && (
                         <button
                           type="button"
-                          onClick={() => onCopyLink(task.id, task.publishedUrl)}
-                          className="btn-ghost"
-                          style={{ borderRadius: "999px", padding: "8px 18px", fontSize: "0.82rem" }}
+                          onClick={() => onStatusChange(task, "done")}
+                          className="btn-primary"
+                          style={{ borderRadius: "999px", padding: "8px 16px", fontSize: "0.8rem" }}
                         >
-                          {copiedLinkId === task.id ? "✓ Copied" : "Copy link"}
+                          Mark done
                         </button>
-                      </div>
-                    ) : (
-                      <p
-                        style={{
-                          marginTop: "6px",
-                          fontSize: "0.78rem",
-                          color: "var(--text-muted)",
-                          lineHeight: 1.6,
-                        }}
-                      >
-                        Waiting for the post assignee to paste the final Reddit link.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <div
-                  style={{
-                    marginTop: "14px",
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "8px",
-                    borderTop: "1px solid var(--border)",
-                    paddingTop: "12px",
-                  }}
-                >
-                  {task.status === "queued" && (
-                    <button
-                      type="button"
-                      onClick={() => onStatusChange(task, "working")}
-                      disabled={task.kind === "comment" && !postLinkReady}
-                      className="btn-ghost"
-                      style={{ borderRadius: "999px", padding: "8px 20px" }}
-                    >
-                      Start
-                    </button>
-                  )}
-                  {task.status !== "done" ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        task.kind === "post"
-                          ? onCompletePostTask(task, proofValue)
-                          : onStatusChange(task, "done")
-                      }
-                      disabled={
-                        (task.kind === "post" && !proofReady) ||
-                        (task.kind === "comment" && !postLinkReady)
-                      }
-                      className="btn-primary"
-                      style={{ borderRadius: "999px", padding: "8px 20px" }}
-                    >
-                      Mark done
-                    </button>
+                      )}
+                    </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => onStatusChange(task, "queued")}
-                      className="btn-ghost"
-                      style={{ borderRadius: "999px", padding: "8px 20px" }}
-                    >
-                      Move back to tasks
-                    </button>
+                    <p style={{ marginTop: "9px", color: "var(--yellow)", fontSize: "0.78rem", fontWeight: 800 }}>
+                      This card will unlock when the Reddit post link is ready.
+                    </p>
                   )}
                 </div>
               </article>
@@ -2644,7 +3017,6 @@ function TaskSection({
     </section>
   );
 }
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: "block" }}>
