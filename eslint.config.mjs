@@ -12,6 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "add_*.js",
+    "exec_*.js",
+    "fix_*.js",
+    "increase_avatar.js",
+    "move_*.js",
+    "remove_dupe.js",
   ]),
 ]);
 

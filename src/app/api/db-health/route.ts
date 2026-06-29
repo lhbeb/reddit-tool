@@ -1,7 +1,21 @@
 import { NextResponse } from "next/server";
 
-const REQUIRED_TABLES = ["team_members", "reddit_posts", "reddit_comments"];
+const REQUIRED_TABLES = ["team_members", "reddit_posts", "reddit_comments", "post_history"];
 const REQUIRED_BUCKETS = ["reddit-assets", "assignment-exports"];
+const REQUIRED_STATUS_VALUES = ["queued", "working", "done", "rejected", "removed", "cancelled"];
+const RPC_MISSING = "rpc:reddit_assignment_health";
+const RPC_OUTDATED = "rpc:reddit_assignment_health_outdated";
+const REQUIRED_COLUMNS = [
+  "reddit_posts.soft_deleted",
+  "reddit_posts.deleted_at",
+  "reddit_posts.deleted_by",
+  "reddit_posts.rejection_reason",
+  "reddit_posts.assigned_at",
+  "reddit_comments.parent_id",
+  "reddit_comments.is_ai_draft",
+  "reddit_comments.posted_url",
+  "reddit_comments.assigned_at",
+];
 
 type CheckResult = {
   ok: boolean;
@@ -52,15 +66,26 @@ async function checkHealthRpc(): Promise<CheckResult> {
         status: response.status,
         text: await response.text(),
       },
-      missing: ["rpc:reddit_assignment_health"],
+      missing: [RPC_MISSING],
     };
   }
 
   const details = (await response.json()) as Record<string, unknown>;
   const tables = details.tables as Record<string, boolean> | undefined;
   const buckets = details.buckets as Record<string, boolean> | undefined;
+  const columns = details.columns as Record<string, boolean> | undefined;
+  const enumValues = details.enum_values as Record<string, string[]> | undefined;
+  const taskStatuses = new Set(enumValues?.task_status ?? []);
+  const hasLifecycleShape = Boolean(columns && enumValues?.task_status);
   const missing = [
+    ...(!hasLifecycleShape ? [RPC_OUTDATED] : []),
     ...REQUIRED_TABLES.filter((table) => !tables?.[table]),
+    ...(hasLifecycleShape ? REQUIRED_COLUMNS.filter((column) => !columns?.[column]) : []),
+    ...(hasLifecycleShape
+      ? REQUIRED_STATUS_VALUES.filter((status) => !taskStatuses.has(status)).map(
+          (status) => `task_status:${status}`,
+        )
+      : []),
     ...REQUIRED_BUCKETS.filter((bucket) => {
       const key = bucket.replace("-", "_");
       return !buckets?.[key];
@@ -85,6 +110,16 @@ async function checkRestFallback(): Promise<CheckResult> {
       return [table, response.ok] as const;
     }),
   );
+  const columnResults = await Promise.all(
+    REQUIRED_COLUMNS.map(async (column) => {
+      const [table = "", field = ""] = column.split(".");
+      const response = await supabaseFetch(`/rest/v1/${table}?select=id,${field}&limit=1`, {
+        cache: "no-store",
+      });
+
+      return [column, response.ok] as const;
+    }),
+  );
 
   const bucketResponse = await supabaseFetch("/storage/v1/bucket", {
     cache: "no-store",
@@ -97,8 +132,10 @@ async function checkRestFallback(): Promise<CheckResult> {
   const bucketMap = Object.fromEntries(
     REQUIRED_BUCKETS.map((bucket) => [bucket, bucketIds.has(bucket)]),
   );
+  const columnMap = Object.fromEntries(columnResults);
   const missing = [
     ...REQUIRED_TABLES.filter((table) => !tableMap[table]),
+    ...REQUIRED_COLUMNS.filter((column) => !columnMap[column]),
     ...REQUIRED_BUCKETS.filter((bucket) => !bucketMap[bucket]),
   ];
 
@@ -106,6 +143,7 @@ async function checkRestFallback(): Promise<CheckResult> {
     ok: missing.length === 0,
     details: {
       tables: tableMap,
+      columns: columnMap,
       buckets: bucketMap,
       bucketStatus: bucketResponse.status,
     },
@@ -119,8 +157,22 @@ export async function GET() {
   try {
     let result = await checkHealthRpc();
 
-    if (!result.ok && result.missing.includes("rpc:reddit_assignment_health")) {
-      result = await checkRestFallback();
+    const shouldUseFallback =
+      result.missing.includes(RPC_MISSING) || result.missing.includes(RPC_OUTDATED);
+
+    if (!result.ok && shouldUseFallback) {
+      const fallback = await checkRestFallback();
+      const rpcMissing = result.missing.filter((item) => item.startsWith("rpc:"));
+      const missing = Array.from(new Set([...rpcMissing, ...fallback.missing]));
+
+      result = {
+        ok: missing.length === 0,
+        details: {
+          rpc: result.details,
+          fallback: fallback.details,
+        },
+        missing,
+      };
     }
 
     const payload = {

@@ -8,305 +8,67 @@ import {
   useState,
 } from "react";
 import Image from "next/image";
+import {
+  Field,
+  MetricCard,
+  MetricPill,
+  PostCard,
+  TaskSection,
+  TeamTimelineSection,
+  TopNav,
+  Avatar,
+} from "@/components/reddit/task-components";
+import {
+  formatSupabaseError,
+  isMissingColumnError,
+} from "@/lib/db/errors";
+import { loadRedditPosts } from "@/lib/db/posts";
+import { loadTeamMembers } from "@/lib/db/team";
+import {
+  getCommentAssigneeIds,
+  getCommentDraftKey,
+  getMemberName,
+  getSubredditName,
+  isClosedStatus,
+  isOpenStatus,
+  isPostActive,
+  isSoftDeletedPost,
+  isScopeFilter,
+  isSortMode,
+  isStatusFilter,
+  isUsableRedditLink,
+  sortLabels,
+  statusLabels,
+} from "@/lib/helpers";
 import { supabase } from "@/lib/supabase";
-
-/* ─── Types ──────────────────────────────────────────────────── */
-type Status = "queued" | "working" | "done";
-type StatusFilter = "active" | "all" | Status;
-type SortMode = "newest" | "oldest" | "assignee";
-type ScopeFilter = "all" | "with-comments";
-
-type TeamMember = {
-  id: string;   // UUID from DB
-  slug: string; // e.g. "mehdi", "jebbar"
-  name: string;
-  isAdmin: boolean;
-};
-
-type RedditComment = {
-  id: string;
-  body: string;
-  assigneeId: string; // UUID
-  status: Status;
-  createdAt: string;
-  parentId?: string | null;
-};
-
-type RedditPost = {
-  id: string;
-  title: string;
-  postBody: string;
-  subredditUrl: string;
-  publishedUrl?: string;
-  assigneeId: string; // UUID
-  status: Status;
-  createdAt: string;
-  comments: RedditComment[];
-};
-
-type AssignedTask = {
-  id: string;
-  kind: "post" | "comment";
-  title: string;
-  body: string;
-  subredditUrl: string;
-  publishedUrl?: string;
-  assigneeId: string;
-  postAssigneeId: string;
-  commentAssigneeIds: string[];
-  status: Status;
-  createdAt: string;
-  postId: string;
-  commentId?: string;
-};
+import type {
+  ActivityLogItem,
+  AssignedTask,
+  CommentDraft,
+  RedditComment,
+  RedditPost,
+  ScopeFilter,
+  SortMode,
+  Status,
+  StatusFilter,
+  TeamMember,
+} from "@/lib/types";
 
 /* ─── Constants ──────────────────────────────────────────────── */
 const SESSION_KEY = "reddit-assignment-session-v2"; // v2 = slug-based
 const ADMIN_FILTER_PREFS_KEY = "reddit-assignment-admin-filters-v1";
 const LOCAL_PASSWORD = "Localserver!!2";
-
-const statusLabels: Record<Status, string> = {
-  queued: "Queued",
-  working: "Working",
-  done: "Done",
-};
-
-const sortLabels: Record<SortMode, string> = {
-  newest: "Newest first",
-  oldest: "Oldest first",
-  assignee: "By assignee",
-};
-
-function isStatusFilter(value: unknown): value is StatusFilter {
-  return value === "active" || value === "all" || value === "queued" || value === "working" || value === "done";
-}
-
-function isSortMode(value: unknown): value is SortMode {
-  return value === "newest" || value === "oldest" || value === "assignee";
-}
-
-function isScopeFilter(value: unknown): value is ScopeFilter {
-  return value === "all" || value === "with-comments";
-}
-
-/* ─── Helpers ────────────────────────────────────────────────── */
-function getMemberName(team: TeamMember[], id: string) {
-  return team.find((m) => m.id === id)?.name ?? "Unassigned";
-}
-
-function getAssigneeList(team: TeamMember[], ids: string[]) {
-  const unique = Array.from(new Set(ids)).filter(Boolean);
-  if (unique.length === 0) return "No one assigned yet";
-  return unique.map((id) => getMemberName(team, id)).join(", ");
-}
-
-function getCommentAssigneeIds(comments: RedditComment[]) {
-  return Array.from(new Set(comments.map((c) => c.assigneeId))).filter(Boolean);
-}
-
-function isUsableRedditLink(value?: string) {
-  const clean = value?.trim();
-  if (!clean) return false;
-  try {
-    const url = new URL(clean);
-    const host = url.hostname.toLowerCase();
-    const path = url.pathname.toLowerCase();
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    if (host === "redd.it") return path.length > 1;
-    return (
-      (host === "reddit.com" || host.endsWith(".reddit.com")) &&
-      path.includes("/comments/")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function getSubredditName(url: string) {
-  const fallback = "r/subreddit";
-  if (!url.trim()) return fallback;
-  try {
-    const parsed = new URL(url);
-    const sub = parsed.pathname
-      .split("/")
-      .filter(Boolean)
-      .find((part, i, parts) => parts[i - 1]?.toLowerCase() === "r");
-    return sub ? `r/${sub}` : fallback;
-  } catch {
-    const match = url.match(/r\/([^/\s]+)/i);
-    return match?.[1] ? `r/${match[1]}` : fallback;
-  }
-}
-
-function formatShortDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "just now";
-  return new Intl.DateTimeFormat("en", { day: "numeric", month: "short" }).format(date);
-}
-
-function getCommentDraftKey(postId: string, parentId?: string | null) {
-  return parentId ? `${postId}:${parentId}` : postId;
-}
-
-function getChildComments(comments: RedditComment[], parentId?: string | null) {
-  return comments
-    .filter((c) => (c.parentId ?? null) === (parentId ?? null))
-    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-}
-
-function getDescendantCommentCount(comments: RedditComment[], parentId: string): number {
-  const children = getChildComments(comments, parentId);
-  return children.reduce(
-    (count, child) => count + 1 + getDescendantCommentCount(comments, child.id),
-    0,
-  );
-}
-const AVATAR_COLORS = [
-  "#ff4500", "#6c63ff", "#22c55e", "#eab308",
-  "#ec4899", "#06b6d4", "#f97316", "#a855f7",
-];
-function avatarColor(index: number) {
-  return AVATAR_COLORS[index % AVATAR_COLORS.length];
-}
-function initials(name: string) {
-  return name
-    .split(" ")
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-}
-
-/* ─── DB row → app type mappers ──────────────────────────────── */
-type DbCommentRow = {
-  id: string;
-  body: string;
-  assignee_id: string | null;
-  status: string;
-  created_at: string;
-  parent_id?: string | null;
-};
-
-type DbPostRow = {
-  id: string;
-  title: string;
-  post_body: string;
-  subreddit_url: string | null;
-  published_url?: string | null;
-  assignee_id: string | null;
-  status: string;
-  created_at: string;
-  reddit_comments?: DbCommentRow[];
-};
-
-type SupabaseSelectPlan = {
-  label: string;
-  query: string;
-};
-
-type SupabaseErrorShape = {
-  code?: string;
-  message?: string;
-  details?: string;
-  hint?: string;
-};
-
-const POST_SELECT_PLANS: SupabaseSelectPlan[] = [
-  {
-    label: "full",
-    query: `
-      id, title, post_body, subreddit_url, published_url,
-      assignee_id, status, created_at,
-      reddit_comments (
-        id, body, assignee_id, status, created_at, parent_id
-      )
-    `,
-  },
-  {
-    label: "without-comment-parent",
-    query: `
-      id, title, post_body, subreddit_url, published_url,
-      assignee_id, status, created_at,
-      reddit_comments (
-        id, body, assignee_id, status, created_at
-      )
-    `,
-  },
-  {
-    label: "without-post-link",
-    query: `
-      id, title, post_body, subreddit_url,
-      assignee_id, status, created_at,
-      reddit_comments (
-        id, body, assignee_id, status, created_at, parent_id
-      )
-    `,
-  },
-  {
-    label: "base",
-    query: `
-      id, title, post_body, subreddit_url,
-      assignee_id, status, created_at,
-      reddit_comments (
-        id, body, assignee_id, status, created_at
-      )
-    `,
-  },
-];
-
-let postSelectPlanIndex = 0;
-
-function getSupabaseErrorMessage(error: unknown) {
-  if (!error || typeof error !== "object") return String(error ?? "Unknown Supabase error");
-  const shaped = error as SupabaseErrorShape;
-  const parts = [shaped.code, shaped.message, shaped.details, shaped.hint].filter(Boolean);
-  if (parts.length > 0) return parts.join(" | ");
-  try {
-    const json = JSON.stringify(error);
-    return json && json !== "{}" ? json : "Unknown Supabase error";
-  } catch {
-    return "Unknown Supabase error";
-  }
-}
-
-function formatSupabaseError(error: unknown) {
-  return getSupabaseErrorMessage(error);
-}
-
-function isMissingColumnError(error: unknown, columnName: string) {
-  if (!error || typeof error !== "object") return false;
-  const shaped = error as SupabaseErrorShape;
-  return shaped.code === "42703" && getSupabaseErrorMessage(error).includes(columnName);
-}
-
-function dbCommentToApp(row: DbCommentRow): RedditComment {
-  return {
-    id: row.id,
-    body: row.body,
-    assigneeId: row.assignee_id ?? "",
-    status: row.status as Status,
-    createdAt: row.created_at,
-    parentId: row.parent_id ?? null,
-  };
-}
-
-function dbPostToApp(row: DbPostRow): RedditPost {
-  return {
-    id: row.id,
-    title: row.title,
-    postBody: row.post_body,
-    subredditUrl: row.subreddit_url ?? "",
-    publishedUrl: row.published_url ?? "",
-    assigneeId: row.assignee_id ?? "",
-    status: row.status as Status,
-    createdAt: row.created_at,
-    comments: (row.reddit_comments ?? []).map(dbCommentToApp),
-  };
-}
 /* ═══════════════════════════════════════════════════════════════
    Main Page
 ═══════════════════════════════════════════════════════════════ */
 export default function Home() {
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  
+  function showToast(msg: string) {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  }
+
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [posts, setPosts] = useState<RedditPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -325,60 +87,30 @@ export default function Home() {
   const [postDraft, setPostDraft] = useState({
     title: "", postBody: "", subredditUrl: "", assigneeId: "",
   });
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [postError, setPostError] = useState("");
-  const [commentDrafts, setCommentDrafts] = useState<
-    Record<string, { body: string; assigneeId: string }>
-  >({});
+  const [isAssignDropdownOpen, setIsAssignDropdownOpen] = useState(false);
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, CommentDraft>>({});
   const [postProofDrafts, setPostProofDrafts] = useState<Record<string, string>>({});
   const [showDoneTasks, setShowDoneTasks] = useState(false);
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
   const [openReplyComposerIds, setOpenReplyComposerIds] = useState<Record<string, boolean>>({});
+  const [memberTab, setMemberTab] = useState<"my-tasks" | "team-tasks">("my-tasks");
+  const [teamFilterAssignee, setTeamFilterAssignee] = useState<string>("all");
 
   /* ── Load team from DB ─────────────────────────────────────── */
   const loadTeam = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("team_members")
-      .select("id, slug, display_name, is_admin")
-      .order("sort_order");
-
-    if (error || !data) return [];
-
-    const mapped: TeamMember[] = data.map((row) => ({
-      id: row.id,
-      slug: row.slug,
-      name: row.display_name,
-      isAdmin: row.is_admin,
-    }));
-    setTeam(mapped);
-    return mapped;
+    const loadedTeam = await loadTeamMembers();
+    setTeam(loadedTeam);
+    return loadedTeam;
   }, []);
 
   /* ── Load posts + nested comments from DB ──────────────────── */
   const loadPosts = useCallback(async () => {
-    let lastError: unknown = null;
-    const orderedPlans = [
-      ...POST_SELECT_PLANS.slice(postSelectPlanIndex),
-      ...POST_SELECT_PLANS.slice(0, postSelectPlanIndex),
-    ];
-
-    for (const plan of orderedPlans) {
-      const { data, error } = await supabase
-        .from("reddit_posts")
-        .select(plan.query)
-        .order("created_at", { ascending: false });
-
-      if (!error && data) {
-        const nextIndex = POST_SELECT_PLANS.findIndex((candidate) => candidate.label === plan.label);
-        if (nextIndex >= 0) postSelectPlanIndex = nextIndex;
-        setPosts((data as unknown as DbPostRow[]).map(dbPostToApp));
-        return;
-      }
-
-      lastError = error;
-    }
-
-    console.error("[loadPosts] Supabase select error:", formatSupabaseError(lastError));
+    const loadedPosts = await loadRedditPosts();
+    setPosts(loadedPosts);
   }, []);
+
   /* ── Bootstrap: team, session, posts ──────────────────────── */
   useEffect(() => {
     (async () => {
@@ -476,16 +208,17 @@ export default function Home() {
 
   /* ── Derived ────────────────────────────────────────────────── */
   const stats = useMemo(() => {
-    const comments = posts.flatMap((p) => p.comments);
+    const activePosts = posts.filter((post) => !isSoftDeletedPost(post));
+    const comments = activePosts.flatMap((p) => p.comments);
     return {
-      posts: posts.length,
+      posts: activePosts.length,
       comments: comments.length,
-      withComments: posts.filter((post) => post.comments.length > 0).length,
+      withComments: activePosts.filter((post) => post.comments.length > 0).length,
       queued:
-        posts.filter((p) => p.status === "queued").length +
+        activePosts.filter((p) => p.status === "queued").length +
         comments.filter((c) => c.status === "queued").length,
       done:
-        posts.filter((p) => p.status === "done").length +
+        activePosts.filter((p) => p.status === "done").length +
         comments.filter((c) => c.status === "done").length,
     };
   }, [posts]);
@@ -507,41 +240,53 @@ export default function Home() {
                 assigneeId: post.assigneeId,
                 postAssigneeId: post.assigneeId,
                 commentAssigneeIds,
-                status: post.status,
+                status: post.softDeleted ? "cancelled" : post.status,
                 createdAt: post.createdAt,
                 postId: post.id,
+                postSoftDeleted: post.softDeleted,
               },
             ]
           : [];
 
       const assignedComments = post.comments
         .filter((c) => c.assigneeId === currentUser.id)
-        .map((c) => ({
-          id: c.id,
-          kind: "comment" as const,
-          title: post.title,
-          body: c.body,
-          subredditUrl: post.subredditUrl,
-          publishedUrl: post.publishedUrl,
-          assigneeId: c.assigneeId,
-          postAssigneeId: post.assigneeId,
-          commentAssigneeIds,
-          status: c.status,
-          createdAt: c.createdAt,
-          postId: post.id,
-          commentId: c.id,
-        }));
+        .map((c) => {
+          const parentComment = c.parentId
+            ? post.comments.find((comment) => comment.id === c.parentId)
+            : null;
+
+          return {
+            id: c.id,
+            kind: "comment" as const,
+            title: post.title,
+            body: c.body,
+            subredditUrl: post.subredditUrl,
+            publishedUrl: post.publishedUrl,
+            assigneeId: c.assigneeId,
+            postAssigneeId: post.assigneeId,
+            commentAssigneeIds,
+            status: post.softDeleted ? "cancelled" : c.status,
+            createdAt: c.createdAt,
+            postId: post.id,
+            postSoftDeleted: post.softDeleted,
+            isAiDraft: c.isAiDraft,
+            postedUrl: c.postedUrl,
+            parentCommentId: c.parentId ?? null,
+            parentCommentBody: parentComment?.body ?? null,
+            commentId: c.id,
+          };
+        });
 
       return [...assignedPost, ...assignedComments];
     });
   }, [currentUser, posts]);
 
   const pendingTasks = useMemo(
-    () => assignedTasks.filter((t) => t.status !== "done"),
+    () => assignedTasks.filter((t) => !t.postSoftDeleted && isOpenStatus(t.status)),
     [assignedTasks],
   );
   const doneTasks = useMemo(
-    () => assignedTasks.filter((t) => t.status === "done"),
+    () => assignedTasks.filter((t) => t.postSoftDeleted || isClosedStatus(t.status)),
     [assignedTasks],
   );
   const pendingTaskCount = pendingTasks.length;
@@ -565,11 +310,186 @@ export default function Home() {
       ),
     [doneTasks],
   );
+  const allTeamTasks = useMemo<AssignedTask[]>(
+    () =>
+      posts.flatMap((post) => {
+        const commentAssigneeIds = getCommentAssigneeIds(post.comments);
+        const mediaMatch = post.postBody.match(/\[MEDIA:(.+?)\]/);
+        const mediaUrl = mediaMatch ? mediaMatch[1] : undefined;
+        const cleanBody = post.postBody.replace(/\[MEDIA:.+?\]/, '').trim();
+
+        const postTask: AssignedTask = {
+          id: post.id,
+          kind: "post",
+          title: post.title,
+          body: cleanBody,
+          mediaUrl,
+          subredditUrl: post.subredditUrl,
+          publishedUrl: post.publishedUrl,
+          assigneeId: post.assigneeId,
+          postAssigneeId: post.assigneeId,
+          commentAssigneeIds,
+          status: post.softDeleted ? "cancelled" : post.status,
+          createdAt: post.createdAt,
+          postId: post.id,
+          postSoftDeleted: post.softDeleted,
+        };
+
+        const commentTasks = post.comments.map((comment) => {
+          const parentComment = comment.parentId
+            ? post.comments.find((candidate) => candidate.id === comment.parentId)
+            : null;
+
+          return {
+            id: comment.id,
+            kind: "comment" as const,
+            title: post.title,
+            body: comment.body,
+            subredditUrl: post.subredditUrl,
+            publishedUrl: post.publishedUrl,
+            assigneeId: comment.assigneeId,
+            postAssigneeId: post.assigneeId,
+            commentAssigneeIds,
+            status: post.softDeleted ? "cancelled" : comment.status,
+            createdAt: comment.createdAt,
+            postId: post.id,
+            postSoftDeleted: post.softDeleted,
+            isAiDraft: comment.isAiDraft,
+            postedUrl: comment.postedUrl,
+            parentCommentId: comment.parentId ?? null,
+            parentCommentBody: parentComment?.body ?? null,
+            commentId: comment.id,
+          };
+        });
+
+        return [postTask, ...commentTasks];
+      }),
+    [posts],
+  );
+  const filteredTeamTasks = useMemo(
+    () =>
+      allTeamTasks
+        .filter((task) => teamFilterAssignee === "all" || task.assigneeId === teamFilterAssignee)
+        .sort((a, b) => {
+          const closedDiff = Number(isClosedStatus(a.status)) - Number(isClosedStatus(b.status));
+          if (closedDiff !== 0) return closedDiff;
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        }),
+    [allTeamTasks, teamFilterAssignee],
+  );
+
+  const activityLog = useMemo<ActivityLogItem[]>(() => {
+    const closedActionLabels: Partial<Record<Status, string>> = {
+      done: "completed",
+      rejected: "reported rejected",
+      removed: "reported removed",
+      cancelled: "cancelled",
+    };
+    const toneByStatus: Partial<Record<Status, ActivityLogItem["tone"]>> = {
+      done: "green",
+      rejected: "red",
+      removed: "muted",
+      cancelled: "muted",
+      working: "yellow",
+      queued: "accent",
+    };
+
+    const getActor = (memberId: string) => getMemberName(team, memberId);
+    const items: ActivityLogItem[] = [];
+
+    posts.forEach((post) => {
+      const postAssignee = getActor(post.assigneeId);
+      const postTime = post.assignedAt ?? post.createdAt;
+      const subreddit = getSubredditName(post.subredditUrl);
+
+      items.push({
+        id: `post-assigned-${post.id}`,
+        actorId: post.assigneeId,
+        actorName: postAssignee,
+        action: post.status === "working" ? "started a post task" : "was assigned a post task",
+        createdAt: postTime,
+        detail: post.title,
+        kind: "post",
+        subreddit,
+        tone: post.status === "working" ? "yellow" : "accent",
+      });
+
+      if (post.publishedUrl) {
+        items.push({
+          id: `post-link-${post.id}`,
+          actorId: post.assigneeId,
+          actorName: postAssignee,
+          action: "tla7",
+          createdAt: postTime,
+          detail: post.title,
+          kind: "post",
+          subreddit,
+          tone: "green",
+        });
+      }
+
+      if (isClosedStatus(post.status)) {
+        const actorId = post.deletedBy ?? post.assigneeId;
+        items.push({
+          id: `post-status-${post.id}-${post.status}`,
+          actorId,
+          actorName: getActor(actorId),
+          action: `${closedActionLabels[post.status] ?? "updated"} a post task`,
+          createdAt: post.deletedAt ?? postTime,
+          detail: post.title,
+          kind: "post",
+          subreddit,
+          tone: toneByStatus[post.status] ?? "muted",
+        });
+      }
+
+      post.comments.forEach((comment) => {
+        const commentAssignee = getActor(comment.assigneeId);
+        const commentTime = comment.assignedAt ?? comment.createdAt;
+        const commentDetail = comment.body.length > 96
+          ? `${comment.body.slice(0, 96)}...`
+          : comment.body;
+
+        items.push({
+          id: `comment-assigned-${comment.id}`,
+          actorId: comment.assigneeId,
+          actorName: commentAssignee,
+          action: comment.parentId ? "was assigned a reply task" : "was assigned a comment task",
+          createdAt: commentTime,
+          detail: commentDetail,
+          kind: "comment",
+          subreddit,
+          tone: "yellow",
+        });
+
+        if (isClosedStatus(comment.status)) {
+          items.push({
+            id: `comment-status-${comment.id}-${comment.status}`,
+            actorId: comment.assigneeId,
+            actorName: commentAssignee,
+            action: `${closedActionLabels[comment.status] ?? "updated"} a comment task`,
+            createdAt: commentTime,
+            detail: commentDetail,
+            kind: "comment",
+            subreddit,
+            tone: toneByStatus[comment.status] ?? "muted",
+          });
+        }
+      });
+    });
+
+    return items
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 60);
+  }, [posts, team]);
 
   const filteredPosts = useMemo(
     () => {
       const normalizedSearch = searchQuery.trim().toLowerCase();
       const matchingPosts = posts.filter((post) => {
+        const includeSoftDeleted = activeStatus === "all" || activeStatus === "cancelled";
+        if (isSoftDeletedPost(post) && !includeSoftDeleted) return false;
+
         const scopeMatch = activeScope === "all" || post.comments.length > 0;
         const assigneeMatch =
           activeAssignee === "all" ||
@@ -579,7 +499,7 @@ export default function Home() {
           activeStatus === "all"
             ? true
             : activeStatus === "active"
-              ? post.status !== "done" || post.comments.some((c) => c.status !== "done")
+              ? isPostActive(post)
               : post.status === activeStatus ||
                 post.comments.some((c) => c.status === activeStatus);
         const searchMatch =
@@ -663,7 +583,7 @@ export default function Home() {
     return {
       title: "No matching assignments",
       body: activeStatus === "active"
-        ? "Everything visible is done. Switch status to All statuses or create a new post."
+        ? "Everything visible is done or closed. Switch status to All statuses or create a new post."
         : "Try another status filter or reset the filters.",
     };
   }, [activeAssignee, activeScope, activeStatus, posts.length, searchQuery, team]);
@@ -709,12 +629,14 @@ export default function Home() {
     setActiveAssignee(found.isAdmin ? "all" : found.id);
     setPostDraft((cur) => ({ ...cur, assigneeId: found.id }));
     setLoginError("");
+    if (found.isAdmin) setAdminFiltersReady(false);
     window.localStorage.setItem(SESSION_KEY, found.slug);
   }
 
   function handleLogout() {
     setCurrentUser(null);
     setActiveAssignee("all");
+    setAdminFiltersReady(false);
     window.localStorage.removeItem(SESSION_KEY);
   }
 
@@ -729,17 +651,48 @@ export default function Home() {
 
     setIsSubmittingPost(true);
     try {
-      const { data, error } = await supabase
+      let finalBody = postDraft.postBody.trim();
+
+      if (mediaFile) {
+        const formData = new FormData();
+        formData.append("file", mediaFile);
+        try {
+          const res = await fetch("/api/upload", { method: "POST", body: formData });
+          const data = await res.json();
+          if (data.success && data.url) {
+            finalBody += `\n\n[MEDIA:${data.url}]`;
+          }
+        } catch (err) {
+          console.error("Failed to upload media:", err);
+        }
+      }
+
+      const insertPayload: Record<string, string | null> = {
+        title: postDraft.title.trim(),
+        post_body: finalBody,
+        subreddit_url: postDraft.subredditUrl.trim() || null,
+        assignee_id: assigneeId,
+        status: "queued",
+      };
+      if (currentUser?.id) insertPayload.created_by_id = currentUser.id;
+
+      const pendingPayload = { ...insertPayload };
+      let response = await supabase
         .from("reddit_posts")
-        .insert({
-          title: postDraft.title.trim(),
-          post_body: postDraft.postBody.trim(),
-          subreddit_url: postDraft.subredditUrl.trim() || null,
-          assignee_id: assigneeId,
-          status: "queued",
-        })
+        .insert(pendingPayload)
         .select()
         .single();
+
+      while (response.error && isMissingColumnError(response.error, "created_by_id")) {
+        delete pendingPayload.created_by_id;
+        response = await supabase
+          .from("reddit_posts")
+          .insert(pendingPayload)
+          .select()
+          .single();
+      }
+
+      const { data, error } = response;
 
       if (error) {
         const message = formatSupabaseError(error);
@@ -754,6 +707,8 @@ export default function Home() {
         // Ensure admin filter shows all so the new post is visible
         setActiveAssignee("all");
         setActiveStatus("active");
+        setActiveScope("all");
+        setSortMode("newest");
         setIsCreatePostOpen(false);
         await loadPosts();
       }
@@ -765,52 +720,87 @@ export default function Home() {
   async function handleCreateComment(postId: string, parentId?: string | null) {
     const draftKey = getCommentDraftKey(postId, parentId);
     const draft = commentDrafts[draftKey];
-    if (!draft?.body.trim()) return;
+    if (!draft?.body.trim()) return false;
 
-    const insertPayload: Record<string, string> = {
+    const insertPayload: Record<string, string | boolean> = {
       post_id: postId,
       body: draft.body.trim(),
       assignee_id: draft.assigneeId,
       status: "queued",
+      is_ai_draft: draft.isAiDraft,
     };
     if (parentId) insertPayload.parent_id = parentId;
+    if (currentUser?.id) insertPayload.created_by_id = currentUser.id;
 
-    let { error } = await supabase.from("reddit_comments").insert(insertPayload);
+    const fallbackColumns = ["parent_id", "created_by_id", "is_ai_draft"];
+    const pendingPayload = { ...insertPayload };
+    let { error } = await supabase.from("reddit_comments").insert(pendingPayload);
 
-    if (error && parentId && isMissingColumnError(error, "parent_id")) {
-      const fallbackPayload = { ...insertPayload };
-      delete fallbackPayload.parent_id;
-      ({ error } = await supabase.from("reddit_comments").insert(fallbackPayload));
+    while (error) {
+      const missingColumn = fallbackColumns.find(
+        (column) => column in pendingPayload && isMissingColumnError(error, column),
+      );
+      if (!missingColumn) break;
+
+      delete pendingPayload[missingColumn];
+      ({ error } = await supabase.from("reddit_comments").insert(pendingPayload));
     }
 
     if (error) {
       console.error("[create-comment]", formatSupabaseError(error));
-      return;
+      return false;
     }
 
     setCommentDrafts((cur) => ({
       ...cur,
-      [draftKey]: { body: "", assigneeId: draft.assigneeId },
+      [draftKey]: { body: "", assigneeId: draft.assigneeId, isAiDraft: draft.isAiDraft },
     }));
     await loadPosts();
+    return true;
   }
   async function updatePost(postId: string, changes: Partial<RedditPost>) {
+    const existingPost = posts.find((post) => post.id === postId);
     const dbChanges: Record<string, unknown> = {};
     if (changes.assigneeId !== undefined) dbChanges.assignee_id = changes.assigneeId;
     if (changes.status !== undefined)     dbChanges.status = changes.status;
     if (changes.publishedUrl !== undefined) dbChanges.published_url = changes.publishedUrl;
+    if (changes.softDeleted !== undefined) dbChanges.soft_deleted = changes.softDeleted;
+    if (changes.deletedAt !== undefined) dbChanges.deleted_at = changes.deletedAt;
+    if (changes.deletedBy !== undefined) dbChanges.deleted_by = changes.deletedBy;
+    if (changes.rejectionReason !== undefined) dbChanges.rejection_reason = changes.rejectionReason;
+    if (changes.assignedAt !== undefined) dbChanges.assigned_at = changes.assignedAt;
+    if (
+      changes.assigneeId !== undefined &&
+      changes.assigneeId !== existingPost?.assigneeId &&
+      changes.assignedAt === undefined
+    ) {
+      dbChanges.assigned_at = new Date().toISOString();
+    }
 
-    let { error } = await supabase.from("reddit_posts").update(dbChanges).eq("id", postId);
+    const fallbackColumns = [
+      "published_url",
+      "soft_deleted",
+      "deleted_at",
+      "deleted_by",
+      "rejection_reason",
+      "assigned_at",
+    ];
+    const pendingChanges = { ...dbChanges };
+    let { error } = await supabase.from("reddit_posts").update(pendingChanges).eq("id", postId);
 
-    if (error && "published_url" in dbChanges && isMissingColumnError(error, "published_url")) {
-      const fallbackChanges = { ...dbChanges };
-      delete fallbackChanges.published_url;
+    while (error) {
+      const missingColumn = fallbackColumns.find(
+        (column) => column in pendingChanges && isMissingColumnError(error, column),
+      );
+      if (!missingColumn) break;
 
-      if (Object.keys(fallbackChanges).length > 0) {
-        ({ error } = await supabase.from("reddit_posts").update(fallbackChanges).eq("id", postId));
-      } else {
+      delete pendingChanges[missingColumn];
+      if (Object.keys(pendingChanges).length === 0) {
         error = null;
+        break;
       }
+
+      ({ error } = await supabase.from("reddit_posts").update(pendingChanges).eq("id", postId));
     }
 
     if (error) {
@@ -828,13 +818,59 @@ export default function Home() {
     const dbChanges: Record<string, unknown> = {};
     if (changes.assigneeId !== undefined) dbChanges.assignee_id = changes.assigneeId;
     if (changes.status !== undefined)     dbChanges.status = changes.status;
+    if (changes.postedUrl !== undefined) dbChanges.posted_url = changes.postedUrl;
+    if (changes.assignedAt !== undefined) dbChanges.assigned_at = changes.assignedAt;
+    const existingComment = posts
+      .flatMap((post) => post.comments)
+      .find((comment) => comment.id === commentId);
+    if (
+      changes.assigneeId !== undefined &&
+      changes.assigneeId !== existingComment?.assigneeId &&
+      changes.assignedAt === undefined
+    ) {
+      dbChanges.assigned_at = new Date().toISOString();
+    }
 
-    const { error } = await supabase.from("reddit_comments").update(dbChanges).eq("id", commentId);
+    const fallbackColumns = ["posted_url", "assigned_at"];
+    const pendingChanges = { ...dbChanges };
+    let { error } = await supabase.from("reddit_comments").update(pendingChanges).eq("id", commentId);
+
+    while (error) {
+      const missingColumn = fallbackColumns.find(
+        (column) => column in pendingChanges && isMissingColumnError(error, column),
+      );
+      if (!missingColumn) break;
+
+      delete pendingChanges[missingColumn];
+      if (Object.keys(pendingChanges).length === 0) {
+        error = null;
+        break;
+      }
+
+      ({ error } = await supabase.from("reddit_comments").update(pendingChanges).eq("id", commentId));
+    }
     if (error) {
       console.error("[update-comment]", formatSupabaseError(error));
       return;
     }
     await loadPosts();
+  }
+
+
+
+  async function deleteTask(task: AssignedTask) {
+    if (!currentUser?.isAdmin) return;
+    if (task.kind === "post") {
+      await deletePost(task.postId);
+    } else if (task.commentId) {
+      const { error } = await supabase.from("reddit_comments").delete().eq("id", task.commentId);
+      if (error) {
+        showToast("Error deleting task: " + error.message);
+      } else {
+        showToast("Task deleted");
+        await loadPosts();
+      }
+    }
   }
 
   async function updateAssignedTaskStatus(task: AssignedTask, status: Status) {
@@ -849,6 +885,7 @@ export default function Home() {
     const clean = publishedUrl.trim();
     if (!isUsableRedditLink(clean) || task.kind !== "post") return;
     await updatePost(task.postId, { publishedUrl: clean, status: "done" });
+    showToast("Post task marked as done!");
     setPostProofDrafts((cur) => ({ ...cur, [task.postId]: clean }));
   }
 
@@ -860,8 +897,13 @@ export default function Home() {
   }
 
   async function deletePost(postId: string) {
-    await supabase.from("reddit_posts").delete().eq("id", postId);
-    await loadPosts();
+    await updatePost(postId, {
+      status: "cancelled",
+      softDeleted: true,
+      deletedAt: new Date().toISOString(),
+      deletedBy: currentUser?.id ?? null,
+      rejectionReason: "Cancelled by admin",
+    });
   }
 
   function exportJson() {
@@ -898,7 +940,7 @@ export default function Home() {
               color: "var(--text-muted)",
               fontSize: "0.78rem",
               fontWeight: 700,
-              letterSpacing: "0.1em",
+              letterSpacing: 0,
               textTransform: "uppercase",
             }}
           >
@@ -1032,8 +1074,10 @@ export default function Home() {
         <TopNav
           currentUser={currentUser}
           currentUserIndex={currentUserIndex}
+          notifications={activityLog}
           pendingCount={pendingTaskCount}
           onLogout={handleLogout}
+          team={team}
         />
 
         <section
@@ -1043,20 +1087,19 @@ export default function Home() {
             padding: "22px 0",
           }}
         >
-          <div style={{ maxWidth: "940px", margin: "0 auto", padding: "0 20px" }}>
+          <div style={{ maxWidth: "1240px", margin: "0 auto", padding: "0 20px" }}>
             <div className="member-hero-row">
               <div style={{ minWidth: 0 }}>
                 <p style={{ color: "var(--accent)", fontSize: "0.76rem", fontWeight: 850 }}>
                   {nextTaskText}
                 </p>
                 <h1 style={{ marginTop: "5px", fontSize: "1.22rem", fontWeight: 900, lineHeight: 1.25 }}>
-                  Your queue
+                  Your tasks
                 </h1>
                 <p style={{ marginTop: "5px", color: "var(--text-muted)", fontSize: "0.84rem", lineHeight: 1.55 }}>
                   Open the first card, do the work on Reddit, then come back and press Mark done.
                 </p>
               </div>
-
               <div className="member-count-strip" aria-label="Task summary">
                 <MetricPill label="To do" value={pendingTasks.length} tone="accent" />
                 <MetricPill label="Done" value={doneTasks.length} tone="green" />
@@ -1065,48 +1108,42 @@ export default function Home() {
           </div>
         </section>
 
-        <section style={{ maxWidth: "940px", margin: "0 auto", padding: "22px 20px 34px" }}>
-          <div style={{ display: "grid", gap: "14px" }}>
-            <TaskSection
-              copiedLinkId={copiedLinkId}
-              emptyText="Nothing to do right now. New tasks from Mehdi Admin will show up here."
-              onCompletePostTask={completePostTask}
-              onCopyLink={copyLinkToClipboard}
-              onPostProofChange={(postId, value) =>
-                setPostProofDrafts((cur) => ({ ...cur, [postId]: value }))
-              }
-              onStatusChange={updateAssignedTaskStatus}
-              postProofDrafts={postProofDrafts}
-              tasks={memberPendingTasks}
-              team={team}
-              title="Do these now"
-              tone="active"
-            />
-
-            <section
-              style={{
-                background: "var(--bg-card)",
-                border: "1px solid var(--border)",
-                borderRadius: "12px",
-                overflow: "hidden",
-              }}
-            >
+        <section style={{ width: "100%", padding: "22px clamp(16px, 2vw, 28px) 34px" }}>
+          <div style={{ display: "grid", gap: "18px" }}>
+            <div className="member-tabs" role="tablist" aria-label="Member task views">
               <button
                 type="button"
-                onClick={() => setShowDoneTasks((value) => !value)}
-                className="done-toggle"
-                aria-expanded={showDoneTasks}
+                role="tab"
+                aria-selected={memberTab === "my-tasks"}
+                className={memberTab === "my-tasks" ? "is-active" : ""}
+                onClick={() => setMemberTab("my-tasks")}
               >
-                <span style={{ fontWeight: 850 }}>Finished tasks</span>
-                <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 800 }}>
-                  {doneTasks.length} {showDoneTasks ? "shown" : "hidden"} {showDoneTasks ? "▴" : "▾"}
-                </span>
+                <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                My Tasks
+                <span>{pendingTasks.length}</span>
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={memberTab === "team-tasks"}
+                className={memberTab === "team-tasks" ? "is-active" : ""}
+                onClick={() => setMemberTab("team-tasks")}
+              >
+                <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                All Team Tasks
+                <span>{filteredTeamTasks.length}</span>
+              </button>
+            </div>
 
-              {showDoneTasks && (
-                <TaskSection
+            {memberTab === "my-tasks" ? (
+              <>
+                <TaskSection currentUser={currentUser} onDeleteTask={deleteTask}
                   copiedLinkId={copiedLinkId}
-                  emptyText="Finished tasks will appear here."
+                  emptyText="Nothing to do right now. New tasks from Mehdi Admin will show up here."
                   onCompletePostTask={completePostTask}
                   onCopyLink={copyLinkToClipboard}
                   onPostProofChange={(postId, value) =>
@@ -1114,17 +1151,132 @@ export default function Home() {
                   }
                   onStatusChange={updateAssignedTaskStatus}
                   postProofDrafts={postProofDrafts}
-                  tasks={recentDoneTasks}
+                  tasks={memberPendingTasks}
                   team={team}
-                  title="Done"
-                  tone="done"
+                  title="JUST DO IT NOW"
+                  tone="active"
                 />
-              )}
-            </section>
+
+                <section
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "12px",
+                    overflow: "hidden",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setShowDoneTasks((value) => !value)}
+                    className="done-toggle"
+                    aria-expanded={showDoneTasks}
+                  >
+                    <span style={{ fontWeight: 850 }}>Finished tasks</span>
+                    <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 800 }}>
+                      {doneTasks.length} {showDoneTasks ? "shown" : "hidden"} {showDoneTasks ? "▴" : "▾"}
+                    </span>
+                  </button>
+
+                  {showDoneTasks && (
+                    <TaskSection currentUser={currentUser} onDeleteTask={deleteTask}
+                      copiedLinkId={copiedLinkId}
+                      emptyText="Finished tasks will appear here."
+                      onCompletePostTask={completePostTask}
+                      onCopyLink={copyLinkToClipboard}
+                      onPostProofChange={(postId, value) =>
+                        setPostProofDrafts((cur) => ({ ...cur, [postId]: value }))
+                      }
+                      onStatusChange={updateAssignedTaskStatus}
+                      postProofDrafts={postProofDrafts}
+                      tasks={recentDoneTasks}
+                      team={team}
+                      title="Done"
+                      tone="done"
+                    />
+                  )}
+                </section>
+              </>
+            ) : (
+              <>
+                <section
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "12px",
+                    padding: "14px 16px",
+                  }}
+                >
+                  <Field label="Filter team tasks">
+                    <select
+                      value={teamFilterAssignee}
+                      onChange={(event) => setTeamFilterAssignee(event.target.value)}
+                      className="input"
+                      style={{ height: "40px", maxWidth: "280px" }}
+                    >
+                      <option value="all">All people</option>
+                      {team.map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </section>
+                <TeamTimelineSection
+                  emptyText="No team tasks match this filter."
+                  tasks={filteredTeamTasks}
+                  team={team}
+                  currentUser={currentUser!}
+                  onDeleteTask={deleteTask}
+                />
+              </>
+            )}
           </div>
         </section>
 
         <style>{`
+          .member-tabs {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 5px;
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+          }
+
+          .member-tabs button {
+            flex: 1 1 180px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: 9px;
+            padding: 9px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            font-weight: 850;
+          }
+
+          .member-tabs button.is-active {
+            border-color: rgba(255,69,0,0.28);
+            background: var(--accent-dim);
+            color: var(--accent);
+          }
+
+          .member-tabs span {
+            min-width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            display: grid;
+            place-items: center;
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            font-size: 0.72rem;
+          }
+
           .member-hero-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
@@ -1164,66 +1316,113 @@ export default function Home() {
             text-align: left;
           }
 
+          .task-section-free {
+            display: grid;
+            gap: 14px;
+          }
+
+          .task-section-heading {
+            display: flex;
+            align-items: end;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            padding: 2px 2px 0;
+          }
+
+          .task-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            align-items: start;
+          }
+          @media (max-width: 900px) {
+            .task-grid { grid-template-columns: repeat(2, 1fr); }
+          }
+          @media (max-width: 600px) {
+            .task-grid { grid-template-columns: 1fr; }
+          }
+
           .member-task-card {
+            --task-accent: var(--accent);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
             background: var(--bg-card);
+            border: 1px solid var(--border-bright);
+            border-radius: 12px;
             padding: 16px;
+            overflow: hidden;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+          }
+
+          .member-task-card:hover {
+            border-color: var(--task-accent);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+          }
+
+          .member-task-card.task-kind-post {
+            --task-accent: var(--accent);
+          }
+
+          .member-task-card.task-kind-comment {
+            --task-accent: var(--yellow);
           }
 
           .member-task-card.is-done {
-            opacity: 0.72;
+            opacity: 0.65;
+          }
+
+          .member-breadcrumb {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
+            font-size: 0.74rem;
+            font-weight: 800;
+            min-width: 0;
+            overflow: hidden;
+            white-space: nowrap;
+          }
+
+          .member-breadcrumb span,
+          .member-breadcrumb strong {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .member-breadcrumb strong {
+            color: var(--text-primary);
           }
 
           .member-task-header,
-          .member-action-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            flex-wrap: wrap;
-          }
 
-          .member-action-panel {
-            margin-top: 14px;
-            background: var(--bg-elevated);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 12px;
-          }
 
-          .member-proof-row {
-            margin-top: 10px;
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 8px;
-            align-items: center;
-          }
 
-          .member-flow-line {
-            margin-top: 10px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            color: var(--text-muted);
-            font-size: 0.76rem;
-            font-weight: 800;
-          }
-
-          .member-flow-dot {
-            width: 22px;
-            height: 22px;
-            border-radius: 999px;
-            display: grid;
-            place-items: center;
-            background: var(--accent-dim);
-            color: var(--accent);
-            font-size: 0.72rem;
-            font-weight: 900;
-          }
 
           .member-flow-dot.ready {
             background: var(--green-dim);
             color: var(--green);
+          }
+
+
+          .member-report-row button {
+            border: 1px solid rgba(248,113,113,0.24);
+            background: rgba(248,113,113,0.08);
+            color: #f87171;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 0.74rem;
+            font-weight: 850;
+          }
+
+          .member-report-row button:last-child {
+            border-color: rgba(148,163,184,0.24);
+            background: rgba(148,163,184,0.10);
+            color: #94a3b8;
           }
 
           @media (max-width: 720px) {
@@ -1238,6 +1437,20 @@ export default function Home() {
             .member-proof-row {
               grid-template-columns: 1fr;
             }
+
+            .task-section-heading {
+              padding: 0;
+            }
+
+            .task-grid {
+              grid-template-columns: 1fr;
+              gap: 14px;
+            }
+
+            .member-breadcrumb {
+              flex-wrap: wrap;
+              white-space: normal;
+            }
           }
         `}</style>
       </main>
@@ -1249,8 +1462,10 @@ export default function Home() {
       <TopNav
         currentUser={currentUser}
         currentUserIndex={0}
+        notifications={activityLog}
         pendingCount={pendingTaskCount}
         onLogout={handleLogout}
+        team={team}
       />
 
       {isCreatePostOpen && (
@@ -1338,6 +1553,54 @@ export default function Home() {
                   style={{ minHeight: "140px", resize: "vertical" }}
                 />
               </Field>
+              <Field label="Attach Media (optional)">
+                <div style={{
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "24px",
+                  border: "2px dashed var(--border-bright)",
+                  borderRadius: "12px",
+                  background: mediaFile ? "var(--accent-dim)" : "var(--bg-elevated)",
+                  color: mediaFile ? "var(--text-primary)" : "var(--text-muted)",
+                  transition: "all 0.2s ease",
+                  textAlign: "center",
+                }}>
+                  <input
+                    type="file"
+                    accept="image/*,video/*"
+                    onChange={(e) => setMediaFile(e.target.files?.[0] || null)}
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      width: "100%",
+                      height: "100%",
+                      opacity: 0,
+                      cursor: "pointer",
+                      zIndex: 10
+                    }}
+                  />
+                  {mediaFile ? (
+                    <>
+                      <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="var(--accent)" strokeWidth="2" style={{ marginBottom: "8px" }}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 800 }}>{mediaFile.name}</span>
+                      <span style={{ fontSize: "0.75rem", opacity: 0.8, marginTop: "4px" }}>Click to change file</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ marginBottom: "8px" }}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                      </svg>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 800 }}>Click or drag file to upload</span>
+                      <span style={{ fontSize: "0.75rem", opacity: 0.7, marginTop: "4px" }}>Supports images and videos</span>
+                    </>
+                  )}
+                </div>
+              </Field>
               <Field label="Subreddit link">
                 <input
                   value={postDraft.subredditUrl}
@@ -1349,19 +1612,106 @@ export default function Home() {
                 />
               </Field>
               <Field label="Assign post to">
-                <select
-                  value={postDraft.assigneeId}
-                  onChange={(e) =>
-                    setPostDraft((cur) => ({ ...cur, assigneeId: e.target.value }))
-                  }
-                  className="input"
-                >
-                  {team.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
+                <div style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    onClick={() => setIsAssignDropdownOpen(!isAssignDropdownOpen)}
+                    className="input"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "10px 14px",
+                      cursor: "pointer",
+                      background: "var(--bg-elevated)",
+                      textAlign: "left",
+                    }}
+                  >
+                    {(() => {
+                      const selectedMember = team.find(m => m.id === (postDraft.assigneeId || team[0]?.id)) || team[0];
+                      if (!selectedMember) return "Select Assignee";
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <Avatar member={selectedMember} size={24} />
+                          <span style={{ fontWeight: 600, fontSize: "0.85rem", color: "var(--text-primary)" }}>
+                            {selectedMember.name}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+
+                  {isAssignDropdownOpen && (
+                    <>
+                      <div 
+                        style={{ position: "fixed", inset: 0, zIndex: 40 }} 
+                        onClick={() => setIsAssignDropdownOpen(false)}
+                      />
+                      <ul
+                        style={{
+                          position: "absolute",
+                          bottom: "calc(100% + 4px)", // popup upwards to avoid cutting off
+                          left: 0,
+                          right: 0,
+                          background: "var(--bg-card)",
+                          border: "1px solid var(--border-bright)",
+                          borderRadius: "10px",
+                          boxShadow: "0 -8px 24px rgba(0,0,0,0.3)",
+                          zIndex: 50,
+                          maxHeight: "220px",
+                          overflowY: "auto",
+                          padding: "6px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "2px",
+                          listStyle: "none",
+                          margin: 0
+                        }}
+                      >
+                        {team.map((m, i) => (
+                          <li key={m.id}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPostDraft((cur) => ({ ...cur, assigneeId: m.id }));
+                                setIsAssignDropdownOpen(false);
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "10px",
+                                width: "100%",
+                                padding: "8px 10px",
+                                background: postDraft.assigneeId === m.id ? "var(--bg-elevated)" : "transparent",
+                                border: "none",
+                                borderRadius: "6px",
+                                cursor: "pointer",
+                                textAlign: "left",
+                                transition: "background 0.15s ease"
+                              }}
+                              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-elevated)")}
+                              onMouseLeave={(e) => {
+                                if (postDraft.assigneeId !== m.id) e.currentTarget.style.background = "transparent";
+                              }}
+                            >
+                              <Avatar member={m} size={28} index={i} />
+                              <span style={{ 
+                                fontWeight: postDraft.assigneeId === m.id ? 700 : 500, 
+                                fontSize: "0.85rem", 
+                                color: postDraft.assigneeId === m.id ? "var(--text-primary)" : "var(--text-secondary)" 
+                              }}>
+                                {m.name}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
               </Field>
               {postError && (
                 <div style={{ background: "rgba(255,69,0,0.1)", border: "1px solid rgba(255,69,0,0.3)", borderRadius: "8px", padding: "10px 14px" }}>
@@ -1450,7 +1800,7 @@ export default function Home() {
               active={activeStatus === "queued"}
               accent="var(--yellow)"
               hint="Waiting work"
-              label="Queued"
+              label="mazal"
               onClick={() => applyMetricFilter("queued")}
               value={stats.queued}
             />
@@ -1633,22 +1983,7 @@ export default function Home() {
               >
                 {team.map((member, index) => (
                   <label key={member.id} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <span
-                      style={{
-                        flexShrink: 0,
-                        width: "34px",
-                        height: "34px",
-                        borderRadius: "50%",
-                        background: avatarColor(index),
-                        display: "grid",
-                        placeItems: "center",
-                        fontSize: "0.7rem",
-                        fontWeight: 800,
-                        color: "#fff",
-                      }}
-                    >
-                      {initials(member.name)}
-                    </span>
+                    <Avatar member={member} size={34} fontSize="0.7rem" index={index} />
                     <input
                       value={member.name}
                       onChange={(e) => handleTeamNameChange(member.id, e.target.value)}
@@ -1760,12 +2095,10 @@ export default function Home() {
                   const draft = commentDrafts[post.id] ?? {
                     body: "",
                     assigneeId: team[0]?.id ?? "",
+                    isAiDraft: false,
                   };
                   return (
-                    <PostCard
-                      key={post.id}
-                      post={post}
-                      team={team}
+                    <PostCard key={post.id} post={post} team={team} currentUser={currentUser!} onDeleteTask={deleteTask} onDeletePost={deletePost}
                       commentDraft={draft}
                       commentDrafts={commentDrafts}
                       openReplyComposerIds={openReplyComposerIds}
@@ -1773,7 +2106,6 @@ export default function Home() {
                         setCommentDrafts((cur) => ({ ...cur, [key]: value }))
                       }
                       onCreateComment={handleCreateComment}
-                      onDeletePost={deletePost}
                       onUpdatePost={updatePost}
                       onUpdateComment={updateComment}
                       onToggleReply={(commentId) =>
@@ -1806,10 +2138,10 @@ export default function Home() {
           box-shadow: 0 0 0 3px rgba(255,255,255,0.03);
         }
         .post-card-summary {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) auto;
-          gap: 14px;
-          align-items: start;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
         }
 
         .post-card-actions {
@@ -1818,6 +2150,7 @@ export default function Home() {
           justify-content: flex-end;
           gap: 8px;
           flex-wrap: wrap;
+          flex-shrink: 0;
         }
 
         .post-flow-strip,
@@ -1903,1427 +2236,24 @@ export default function Home() {
           }
         }
       `}</style>
+
+      {toastMessage && (
+        <div style={{
+          position: "fixed",
+          bottom: "24px",
+          right: "24px",
+          backgroundColor: "var(--foreground)",
+          color: "var(--background)",
+          padding: "12px 24px",
+          borderRadius: "8px",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.1)",
+          fontWeight: 600,
+          zIndex: 9999,
+          animation: "slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards"
+        }}>
+          {toastMessage}
+        </div>
+      )}
     </main>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   PostCard
-═══════════════════════════════════════════════════════════════ */
-function PostCard({
-  post, team, commentDraft, commentDrafts, openReplyComposerIds,
-  onCommentDraftChange, onCreateComment, onDeletePost, onUpdatePost, onUpdateComment, onToggleReply,
-}: {
-  post: RedditPost;
-  team: TeamMember[];
-  commentDraft: { body: string; assigneeId: string };
-  commentDrafts: Record<string, { body: string; assigneeId: string }>;
-  openReplyComposerIds: Record<string, boolean>;
-  onCommentDraftChange: (key: string, value: { body: string; assigneeId: string }) => void;
-  onCreateComment: (postId: string, parentId?: string | null) => void;
-  onDeletePost: (postId: string) => void;
-  onUpdatePost: (postId: string, changes: Partial<RedditPost>) => void;
-  onUpdateComment: (postId: string, commentId: string, changes: Partial<RedditComment>) => void;
-  onToggleReply: (commentId: string) => void;
-}) {
-  const [showControls, setShowControls] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const commentAssigneeIds = getCommentAssigneeIds(post.comments);
-  const totalComments = post.comments.length;
-  const finishedComments = post.comments.filter((c) => c.status === "done").length;
-  const activeComments = post.comments.filter((c) => c.status !== "done").length;
-  const openComments = totalComments - finishedComments;
-  const rootComments = getChildComments(post.comments);
-  const postLinkReady = isUsableRedditLink(post.publishedUrl);
-  const commentAssigneeText =
-    totalComments > 0
-      ? getAssigneeList(team, commentAssigneeIds)
-      : "No comments assigned yet";
-  const commentProgressText =
-    totalComments === 0
-      ? "0 comments"
-      : activeComments === 0
-        ? "All comments done"
-        : `${activeComments} active comment${activeComments === 1 ? "" : "s"}`;
-  const expandedCommentProgressText =
-    totalComments > 0 ? `${finishedComments}/${totalComments} comments done` : "0 comments";
-  const commentStateText =
-    totalComments === 0
-      ? "Add comment assignments after the post task"
-      : openComments === 0
-        ? "All comments complete"
-        : `${openComments} comment${openComments === 1 ? "" : "s"} still open`;
-  const commentTone =
-    totalComments > 0 && openComments === 0
-      ? "var(--green)"
-      : totalComments > 0
-        ? "var(--yellow)"
-        : "var(--text-muted)";
-  const glowClass =
-    post.status === "done" ? "status-glow-done"
-    : post.status === "working" ? "status-glow-working"
-    : "status-glow-queued";
-
-  function toggleExpanded() {
-    if (isExpanded) setShowControls(false);
-    setIsExpanded((value) => !value);
-  }
-
-  return (
-    <article
-      className={glowClass}
-      style={{
-        width: "100%",
-        borderRadius: "12px",
-        background: "var(--bg-card)",
-        border: "1px solid var(--border-bright)",
-        overflow: "hidden",
-      }}
-    >
-      <div style={{ padding: "14px 16px" }}>
-        <div className="post-card-summary">
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontWeight: 800, fontSize: "0.82rem", color: "var(--accent)" }}>
-                {getSubredditName(post.subredditUrl)}
-              </span>
-              <StatusPill status={post.status} />
-              <span style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
-                {formatShortDate(post.createdAt)}
-              </span>
-              <span
-                style={{
-                  border: `1px solid ${postLinkReady ? "rgba(34,197,94,0.25)" : "rgba(234,179,8,0.22)"}`,
-                  background: postLinkReady ? "rgba(34,197,94,0.10)" : "rgba(234,179,8,0.10)",
-                  color: postLinkReady ? "#4ade80" : "#fbbf24",
-                  borderRadius: "999px",
-                  padding: "2px 8px",
-                  fontSize: "0.72rem",
-                  fontWeight: 800,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {postLinkReady ? "Post link ready" : "Waiting for post link"}
-              </span>
-            </div>
-
-            <h3
-              title={post.title}
-              style={{
-                marginTop: "9px",
-                fontSize: "1rem",
-                fontWeight: 850,
-                lineHeight: 1.35,
-                color: "var(--text-primary)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {post.title}
-            </h3>
-          </div>
-
-          <div className="post-card-actions">
-            <TeamMemberChip memberId={post.assigneeId} team={team} label="Post" />
-            <span
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-elevated)",
-                color: commentTone,
-                borderRadius: "999px",
-                padding: "6px 10px",
-                fontSize: "0.76rem",
-                fontWeight: 800,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {commentProgressText}
-            </span>
-            <button
-              type="button"
-              aria-expanded={isExpanded}
-              onClick={toggleExpanded}
-              className={isExpanded ? "btn-ghost" : "btn-primary"}
-              style={{ height: "34px", padding: "0 14px", fontSize: "0.78rem" }}
-            >
-              {isExpanded ? "Collapse" : "Expand"}
-            </button>
-          </div>
-        </div>
-
-        <div className="post-flow-strip" aria-label="Assignment path">
-          <div className="post-flow-card">
-            <p style={{ fontSize: "0.72rem", fontWeight: 800, color: "var(--text-muted)" }}>
-              1. Post + title
-            </p>
-            <div style={{ marginTop: "7px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <TeamMemberChip compact memberId={post.assigneeId} team={team} />
-              <span style={{ color: "var(--text-muted)", fontSize: "0.75rem", fontWeight: 700 }}>
-                {statusLabels[post.status]}
-              </span>
-            </div>
-          </div>
-
-          <span className="post-flow-arrow" aria-hidden="true">→</span>
-
-          <div className="post-flow-card">
-            <p style={{ fontSize: "0.72rem", fontWeight: 800, color: "var(--text-muted)" }}>
-              2. Comments
-            </p>
-            <p
-              title={commentAssigneeText}
-              style={{
-                marginTop: "7px",
-                color: "var(--text-primary)",
-                fontSize: "0.8rem",
-                fontWeight: 800,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {commentAssigneeText}
-            </p>
-            <p style={{ marginTop: "3px", color: commentTone, fontSize: "0.74rem", fontWeight: 800 }}>
-              {commentStateText}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {isExpanded && (
-        <div style={{ borderTop: "1px solid var(--border)", background: "rgba(255,255,255,0.015)" }}>
-          <div style={{ padding: "16px 18px" }}>
-            <div style={{ display: "grid", gap: "12px" }}>
-              <section>
-                <p style={{ fontSize: "0.74rem", fontWeight: 800, color: "var(--text-muted)" }}>
-                  Post body
-                </p>
-                <p
-                  style={{
-                    marginTop: "6px",
-                    whiteSpace: "pre-wrap",
-                    fontSize: "0.88rem",
-                    lineHeight: 1.75,
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {post.postBody}
-                </p>
-              </section>
-
-              <div className="post-link-row">
-                {post.subredditUrl && (
-                  <a
-                    href={post.subredditUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn-dark"
-                    style={{ fontSize: "0.76rem", padding: "7px 10px", wordBreak: "break-all" }}
-                  >
-                    Open subreddit
-                  </a>
-                )}
-                {postLinkReady ? (
-                  <a
-                    href={post.publishedUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn-dark"
-                    style={{ fontSize: "0.76rem", padding: "7px 10px", wordBreak: "break-all" }}
-                  >
-                    Open Reddit post
-                  </a>
-                ) : (
-                  <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 700 }}>
-                    Final Reddit post link is still missing.
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <AssignmentFlow post={post} team={team} />
-
-            <button
-              type="button"
-              onClick={() => setShowControls((value) => !value)}
-              style={{
-                marginTop: "12px",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                fontSize: "0.78rem",
-                fontWeight: 800,
-                color: showControls ? "var(--accent)" : "var(--text-muted)",
-                background: "transparent",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-              }}
-            >
-              <span aria-hidden="true">{showControls ? "▾" : "▸"}</span>
-              Admin controls
-            </button>
-
-            {showControls && (
-              <div
-                className="admin-controls-grid"
-                style={{
-                  marginTop: "10px",
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "10px",
-                  padding: "12px",
-                }}
-              >
-                <select
-                  value={post.assigneeId}
-                  onChange={(e) => onUpdatePost(post.id, { assigneeId: e.target.value })}
-                  className="input"
-                  style={{ height: "38px", fontSize: "0.82rem" }}
-                  aria-label="Post assignee"
-                >
-                  {team.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={post.status}
-                  onChange={(e) => onUpdatePost(post.id, { status: e.target.value as Status })}
-                  className="input"
-                  style={{ height: "38px", fontSize: "0.82rem" }}
-                  aria-label="Post status"
-                >
-                  {Object.entries(statusLabels).map(([v, l]) => (
-                    <option key={v} value={v}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => onDeletePost(post.id)}
-                  style={{
-                    height: "38px",
-                    padding: "0 12px",
-                    borderRadius: "8px",
-                    border: "1px solid rgba(255,69,0,0.3)",
-                    background: "rgba(255,69,0,0.08)",
-                    color: "#ff7043",
-                    fontSize: "0.78rem",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  Delete
-                </button>
-                <input
-                  value={post.publishedUrl ?? ""}
-                  onChange={(e) => onUpdatePost(post.id, { publishedUrl: e.target.value })}
-                  placeholder="Final Reddit post link"
-                  className="input"
-                  style={{ height: "38px", fontSize: "0.82rem", gridColumn: "1 / -1" }}
-                />
-              </div>
-            )}
-          </div>
-
-          <div style={{ padding: "16px 18px", borderTop: "1px solid var(--border)" }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "12px",
-                marginBottom: "12px",
-              }}
-            >
-              <div>
-                <h4 style={{ fontWeight: 850, fontSize: "0.9rem" }}>Comments</h4>
-                <p style={{ marginTop: "2px", color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 700 }}>
-                  Assign comments under this post. Replies stay connected like a Reddit thread.
-                </p>
-              </div>
-              <span
-                style={{
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "999px",
-                  padding: "3px 10px",
-                  fontSize: "0.75rem",
-                  fontWeight: 800,
-                  color: commentTone,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {expandedCommentProgressText}
-              </span>
-            </div>
-
-            <CommentComposer
-              assigneeId={commentDraft.assigneeId}
-              body={commentDraft.body}
-              buttonLabel="Add comment"
-              onAssigneeChange={(assigneeId) =>
-                onCommentDraftChange(post.id, { ...commentDraft, assigneeId })
-              }
-              onBodyChange={(body) => onCommentDraftChange(post.id, { ...commentDraft, body })}
-              onSubmit={() => onCreateComment(post.id)}
-              placeholder="Paste comment text"
-              team={team}
-            />
-
-            <div
-              style={{
-                marginTop: "12px",
-                background: "var(--bg-elevated)",
-                border: "1px solid var(--border)",
-                borderRadius: "10px",
-                padding: "10px",
-              }}
-            >
-              {rootComments.length === 0 ? (
-                <p
-                  style={{
-                    textAlign: "center",
-                    padding: "16px",
-                    fontSize: "0.82rem",
-                    color: "var(--text-muted)",
-                    fontWeight: 700,
-                  }}
-                >
-                  No comments yet.
-                </p>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  {rootComments.map((comment) => (
-                    <ThreadedComment
-                      key={comment.id}
-                      comment={comment}
-                      comments={post.comments}
-                      getDraft={(parentId) =>
-                        commentDrafts[getCommentDraftKey(post.id, parentId)] ?? {
-                          body: "",
-                          assigneeId: team[0]?.id ?? "",
-                        }
-                      }
-                      isReplyOpen={(commentId) => Boolean(openReplyComposerIds[commentId])}
-                      level={0}
-                      onCreateReply={(parentId) => {
-                        onCreateComment(post.id, parentId);
-                        onToggleReply(parentId);
-                      }}
-                      onDraftChange={(parentId, draftValue) =>
-                        onCommentDraftChange(getCommentDraftKey(post.id, parentId), draftValue)
-                      }
-                      onUpdateComment={(commentId, changes) =>
-                        onUpdateComment(post.id, commentId, changes)
-                      }
-                      onToggleReply={onToggleReply}
-                      postLinkReady={postLinkReady}
-                      team={team}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </article>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   Sub-components (unchanged visual design)
-═══════════════════════════════════════════════════════════════ */
-function TopNav({
-  currentUser, currentUserIndex, pendingCount, onLogout,
-}: {
-  currentUser: TeamMember;
-  currentUserIndex: number;
-  pendingCount: number;
-  onLogout: () => void;
-}) {
-  return (
-    <nav
-      style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 50,
-        background: "rgba(14,14,14,0.85)",
-        backdropFilter: "blur(16px)",
-        borderBottom: "1px solid var(--border)",
-        padding: "0 24px",
-        height: "58px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "16px",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: "16px", flexShrink: 0 }}>
-        <div
-          style={{
-            background: "rgba(255,69,0,0.1)",
-            border: "1px solid rgba(255,69,0,0.2)",
-            borderRadius: "10px",
-            padding: "5px 10px",
-          }}
-        >
-          <Image
-            src="/reddit-1.svg"
-            alt="Reddit logo"
-            width={80}
-            height={28}
-            className="h-6 w-auto"
-            style={{
-              filter:
-                "brightness(0) saturate(100%) invert(38%) sepia(99%) saturate(700%) hue-rotate(353deg) brightness(100%) contrast(102%)",
-            }}
-          />
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border-bright)",
-            borderRadius: "999px",
-            padding: "4px 12px 4px 4px",
-          }}
-        >
-          <span
-            style={{
-              width: "28px",
-              height: "28px",
-              borderRadius: "50%",
-              background: avatarColor(currentUserIndex),
-              display: "grid",
-              placeItems: "center",
-              fontSize: "0.65rem",
-              fontWeight: 800,
-              color: "#fff",
-              flexShrink: 0,
-            }}
-          >
-            {initials(currentUser.name)}
-          </span>
-          <span style={{ fontSize: "0.82rem", fontWeight: 700 }}>{currentUser.name}</span>
-        </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-        <NotificationBell count={pendingCount} />
-        <button
-          onClick={onLogout}
-          className="btn-ghost"
-          style={{ fontSize: "0.75rem", padding: "6px 14px" }}
-        >
-          Logout
-        </button>
-      </div>
-    </nav>
-  );
-}
-
-function MetricCard({
-  active = false, accent, hint, label, onClick, value,
-}: {
-  active?: boolean;
-  accent: string;
-  hint: string;
-  label: string;
-  onClick: () => void;
-  value: number;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`metric-card ${active ? "is-active" : ""}`}
-      style={{
-        background: "var(--bg-card)",
-        border: active ? `1px solid ${accent}` : "1px solid var(--border)",
-        borderRadius: "12px",
-        padding: "14px 18px",
-        borderTop: `2px solid ${accent}`,
-        color: "var(--text-primary)",
-      }}
-    >
-      <p
-        style={{
-          fontSize: "0.74rem",
-          fontWeight: 800,
-          color: active ? accent : "var(--text-muted)",
-        }}
-      >
-        {label}
-      </p>
-      <p
-        style={{
-          fontSize: "1.75rem",
-          fontWeight: 900,
-          lineHeight: 1.1,
-          color: accent,
-          marginTop: "4px",
-        }}
-      >
-        {value}
-      </p>
-      <p style={{ marginTop: "4px", color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 700 }}>
-        {hint}
-      </p>
-    </button>
-  );
-}
-function TeamMemberChip({
-  compact = false, label, memberId, team,
-}: {
-  compact?: boolean;
-  label?: string;
-  memberId: string;
-  team: TeamMember[];
-}) {
-  const memberIndex = team.findIndex((member) => member.id === memberId);
-  const colorIndex = memberIndex >= 0 ? memberIndex : 0;
-  const name = getMemberName(team, memberId);
-
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: compact ? "5px" : "6px",
-        border: "1px solid var(--border)",
-        background: "var(--bg-elevated)",
-        borderRadius: "999px",
-        padding: compact ? "3px 8px 3px 3px" : "4px 10px 4px 4px",
-        maxWidth: "100%",
-        minWidth: 0,
-      }}
-    >
-      {label && (
-        <span style={{ color: "var(--text-muted)", fontSize: "0.68rem", fontWeight: 800 }}>
-          {label}
-        </span>
-      )}
-      <span
-        aria-hidden="true"
-        style={{
-          width: compact ? "20px" : "24px",
-          height: compact ? "20px" : "24px",
-          borderRadius: "50%",
-          background: avatarColor(colorIndex),
-          display: "grid",
-          placeItems: "center",
-          color: "#fff",
-          fontSize: compact ? "0.58rem" : "0.62rem",
-          fontWeight: 900,
-          flexShrink: 0,
-        }}
-      >
-        {initials(name)}
-      </span>
-      <span
-        style={{
-          color: "var(--text-primary)",
-          fontSize: compact ? "0.74rem" : "0.78rem",
-          fontWeight: 800,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {name}
-      </span>
-    </span>
-  );
-}
-function StatusPill({ status }: { status: Status }) {
-  const config: Record<Status, { label: string; bg: string; color: string }> = {
-    queued:  { label: "🔴 Queued",  bg: "rgba(255,69,0,0.12)",  color: "#ff7043" },
-    working: { label: "🟡 Working", bg: "rgba(234,179,8,0.12)", color: "#fbbf24" },
-    done:    { label: "🟢 Done",    bg: "rgba(34,197,94,0.12)", color: "#4ade80" },
-  };
-  const { label, bg, color } = config[status];
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        background: bg,
-        color,
-        borderRadius: "999px",
-        padding: "2px 10px",
-        fontSize: "0.72rem",
-        fontWeight: 800,
-        letterSpacing: "0.02em",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
-function AssignmentFlow({ post, team }: { post: RedditPost; team: TeamMember[] }) {
-  const commentAssigneeIds = getCommentAssigneeIds(post.comments);
-  const finishedComments = post.comments.filter((c) => c.status === "done").length;
-  const totalComments = post.comments.length;
-  const postLinkReady = isUsableRedditLink(post.publishedUrl);
-  const commentAssignees =
-    totalComments > 0 ? getAssigneeList(team, commentAssigneeIds) : "Add comment assignments";
-  const commentsReady = totalComments > 0 && finishedComments === totalComments;
-
-  return (
-    <div
-      style={{
-        marginTop: "14px",
-        background: "var(--bg-elevated)",
-        border: "1px solid var(--border)",
-        borderRadius: "10px",
-        padding: "10px 12px",
-      }}
-    >
-      <p style={{ color: "var(--text-muted)", fontSize: "0.74rem", fontWeight: 800 }}>
-        Assignment path
-      </p>
-      <div className="assignment-flow-strip" style={{ marginTop: "8px" }}>
-        <div className="assignment-flow-item">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-            <span style={{ color: "var(--text-primary)", fontSize: "0.8rem", fontWeight: 850 }}>
-              1. Post + title
-            </span>
-            <StatusPill status={post.status} />
-          </div>
-          <div style={{ marginTop: "8px" }}>
-            <TeamMemberChip compact memberId={post.assigneeId} team={team} />
-          </div>
-          <p style={{ marginTop: "6px", color: "var(--text-muted)", fontSize: "0.73rem", lineHeight: 1.45 }}>
-            {postLinkReady ? "The final Reddit link is ready." : "This person still needs to paste the Reddit post link."}
-          </p>
-        </div>
-
-        <span className="post-flow-arrow" aria-hidden="true">→</span>
-
-        <div className="assignment-flow-item">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-            <span style={{ color: "var(--text-primary)", fontSize: "0.8rem", fontWeight: 850 }}>
-              2. Comments
-            </span>
-            <span
-              style={{
-                color: commentsReady ? "var(--green)" : totalComments > 0 ? "var(--yellow)" : "var(--text-muted)",
-                fontSize: "0.74rem",
-                fontWeight: 850,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {totalComments > 0 ? `${finishedComments}/${totalComments} done` : "0 assigned"}
-            </span>
-          </div>
-          <p
-            title={commentAssignees}
-            style={{
-              marginTop: "8px",
-              color: "var(--text-primary)",
-              fontSize: "0.78rem",
-              fontWeight: 800,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {commentAssignees}
-          </p>
-          <p style={{ marginTop: "6px", color: "var(--text-muted)", fontSize: "0.73rem", lineHeight: 1.45 }}>
-            {postLinkReady ? "Comment assignees can open the post and work." : "Comment work waits until the post link exists."}
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-function MemberTaskFlow({ task, team }: { task: AssignedTask; team: TeamMember[] }) {
-  const isPostTask = task.kind === "post";
-  const postLinkReady = isUsableRedditLink(task.publishedUrl);
-  const stepOneReady = isPostTask ? task.status === "done" && postLinkReady : postLinkReady;
-  const stepTwoReady = task.status === "done";
-  const postPerson = isPostTask ? "you" : getMemberName(team, task.postAssigneeId);
-  const commentPerson = isPostTask ? getAssigneeList(team, task.commentAssigneeIds) : "you";
-
-  return (
-    <div className="member-flow-line" aria-label="Task order">
-      <span className={`member-flow-dot ${stepOneReady ? "ready" : ""}`}>
-        {stepOneReady ? "✓" : "1"}
-      </span>
-      <span>Post: {postPerson}</span>
-      <span style={{ color: "var(--accent)", fontWeight: 900 }}>→</span>
-      <span className={`member-flow-dot ${stepTwoReady ? "ready" : ""}`}>
-        {stepTwoReady ? "✓" : "2"}
-      </span>
-      <span>{isPostTask ? "Then comments" : "Your comment"}: {commentPerson}</span>
-    </div>
-  );
-}
-function NotificationBell({ count }: { count: number }) {
-  const hasPending = count > 0;
-  return (
-    <div
-      aria-label={hasPending ? `${count} unfinished assigned tasks` : "No unfinished assigned tasks"}
-      title={hasPending ? `${count} unfinished assigned tasks` : "No unfinished assigned tasks"}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        background: "var(--bg-elevated)",
-        border: "1px solid var(--border-bright)",
-        borderRadius: "999px",
-        padding: "5px 12px 5px 5px",
-      }}
-    >
-      <span
-        style={{
-          position: "relative",
-          width: "28px",
-          height: "28px",
-          background: hasPending ? "var(--accent-dim)" : "var(--bg-card)",
-          borderRadius: "50%",
-          display: "grid",
-          placeItems: "center",
-        }}
-        className={hasPending ? "pulse-ring" : ""}
-      >
-        <svg
-          aria-hidden="true"
-          style={{ width: "14px", height: "14px", color: hasPending ? "var(--accent)" : "var(--text-muted)" }}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth="2.3"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0a3 3 0 0 1-6 0"
-          />
-        </svg>
-        {hasPending && (
-          <span
-            style={{
-              position: "absolute",
-              top: "1px",
-              right: "1px",
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: "var(--accent)",
-              border: "2px solid var(--bg-base)",
-            }}
-          />
-        )}
-      </span>
-      <span
-        style={{
-          fontSize: "0.78rem",
-          fontWeight: 800,
-          color: hasPending ? "var(--accent)" : "var(--text-muted)",
-          minWidth: "16px",
-          textAlign: "center",
-        }}
-      >
-        {count}
-      </span>
-    </div>
-  );
-}
-
-function CommentComposer({
-  assigneeId, body, buttonLabel, onAssigneeChange, onBodyChange, onSubmit, placeholder, team,
-}: {
-  assigneeId: string;
-  body: string;
-  buttonLabel: string;
-  onAssigneeChange: (assigneeId: string) => void;
-  onBodyChange: (body: string) => void;
-  onSubmit: () => void;
-  placeholder: string;
-  team: TeamMember[];
-}) {
-  return (
-    <div
-      className="comment-composer"
-      style={{
-        background: "var(--bg-elevated)",
-        border: "1px solid var(--border)",
-        borderRadius: "10px",
-        padding: "12px",
-        display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) 150px auto",
-        gap: "8px",
-      }}
-    >
-      <textarea
-        value={body}
-        onChange={(e) => onBodyChange(e.target.value)}
-        placeholder={placeholder}
-        className="input"
-        style={{ minHeight: "72px", resize: "vertical", fontSize: "0.82rem" }}
-      />
-      <select
-        value={assigneeId}
-        onChange={(e) => onAssigneeChange(e.target.value)}
-        className="input"
-        style={{ height: "38px", alignSelf: "end", fontSize: "0.82rem" }}
-      >
-        {team.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.name}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        onClick={onSubmit}
-        className="btn-primary"
-        style={{ height: "38px", alignSelf: "end", padding: "0 14px", fontSize: "0.78rem" }}
-      >
-        {buttonLabel}
-      </button>
-    </div>
-  );
-}
-
-function ThreadedComment({
-  comment, comments, getDraft, isReplyOpen, level,
-  onCreateReply, onDraftChange, onToggleReply, onUpdateComment, postLinkReady, team,
-}: {
-  comment: RedditComment;
-  comments: RedditComment[];
-  getDraft: (parentId: string) => { body: string; assigneeId: string };
-  isReplyOpen: (commentId: string) => boolean;
-  level: number;
-  onCreateReply: (parentId: string) => void;
-  onDraftChange: (parentId: string, draft: { body: string; assigneeId: string }) => void;
-  onToggleReply: (commentId: string) => void;
-  onUpdateComment: (commentId: string, changes: Partial<RedditComment>) => void;
-  postLinkReady: boolean;
-  team: TeamMember[];
-}) {
-  const childComments = getChildComments(comments, comment.id);
-  const hiddenReplyCount = getDescendantCommentCount(comments, comment.id);
-  const draft = getDraft(comment.id);
-  const replyOpen = isReplyOpen(comment.id);
-  const [showReplies, setShowReplies] = useState(level < 1);
-  const shouldCollapseReplies = level >= 1 && childComments.length > 0;
-  const shouldShowReplies = childComments.length > 0 && (!shouldCollapseReplies || showReplies);
-  const branchColor = level === 0 ? "rgba(255,69,0,0.34)" : "rgba(255,255,255,0.16)";
-
-  return (
-    <div style={{ paddingLeft: level > 0 ? "18px" : "0" }}>
-      <div
-        style={{
-          position: "relative",
-          borderLeft: `2px solid ${branchColor}`,
-          paddingLeft: "14px",
-          marginBottom: "5px",
-        }}
-      >
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: "-5px",
-            top: "18px",
-            width: "8px",
-            height: "8px",
-            borderRadius: "50%",
-            background: level === 0 ? "var(--accent)" : "var(--text-muted)",
-          }}
-        />
-
-        <div
-          style={{
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            borderRadius: "8px",
-            padding: "12px",
-            marginBottom: "6px",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: "8px",
-              justifyContent: "space-between",
-            }}
-          >
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center", minWidth: 0 }}>
-              <TeamMemberChip compact memberId={comment.assigneeId} team={team} />
-              <span style={{ color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 700 }}>
-                {level === 0 ? "Comment" : `Reply level ${level}`}
-              </span>
-              <span style={{ color: "var(--text-muted)", fontSize: "0.72rem" }}>
-                {formatShortDate(comment.createdAt)}
-              </span>
-            </div>
-            <StatusPill status={comment.status} />
-          </div>
-
-          <p
-            style={{
-              marginTop: "8px",
-              whiteSpace: "pre-wrap",
-              fontSize: "0.83rem",
-              lineHeight: 1.7,
-              color: "var(--text-secondary)",
-            }}
-          >
-            {comment.body}
-          </p>
-
-          <div
-            style={{
-              marginTop: "10px",
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "8px",
-              alignItems: "center",
-            }}
-          >
-            <div style={{ display: "flex", gap: "6px", flex: 1, minWidth: "220px" }}>
-              <select
-                value={comment.assigneeId}
-                onChange={(e) => onUpdateComment(comment.id, { assigneeId: e.target.value })}
-                className="input"
-                style={{ height: "32px", fontSize: "0.78rem", flex: 1 }}
-                aria-label={`Assignee for comment by ${getMemberName(team, comment.assigneeId)}`}
-              >
-                {team.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={comment.status}
-                onChange={(e) =>
-                  onUpdateComment(comment.id, { status: e.target.value as Status })
-                }
-                className="input"
-                style={{ height: "32px", fontSize: "0.78rem", flex: 1 }}
-                aria-label="Comment status"
-              >
-                {Object.entries(statusLabels).map(([v, l]) => (
-                  <option key={v} value={v}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-              <span
-                style={{
-                  fontSize: "0.7rem",
-                  fontWeight: 800,
-                  background: postLinkReady
-                    ? "rgba(96,165,250,0.12)"
-                    : "rgba(234,179,8,0.12)",
-                  color: postLinkReady ? "#60a5fa" : "#fbbf24",
-                  borderRadius: "999px",
-                  padding: "2px 8px",
-                }}
-              >
-                {postLinkReady ? "Ready to comment" : "Waiting for post link"}
-              </span>
-              {childComments.length > 0 && (
-                <span style={{ color: "var(--text-muted)", fontSize: "0.7rem", fontWeight: 800 }}>
-                  {hiddenReplyCount} repl{hiddenReplyCount === 1 ? "y" : "ies"}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => onToggleReply(comment.id)}
-                style={{
-                  fontSize: "0.75rem",
-                  fontWeight: 800,
-                  background: "transparent",
-                  border: "none",
-                  color: replyOpen ? "var(--accent)" : "var(--text-muted)",
-                  cursor: "pointer",
-                  padding: "2px 0",
-                }}
-              >
-                {replyOpen ? "Cancel" : "Reply"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {replyOpen && (
-          <div style={{ margin: "8px 0 8px" }}>
-            <CommentComposer
-              assigneeId={draft.assigneeId}
-              body={draft.body}
-              buttonLabel="Reply"
-              onAssigneeChange={(assigneeId) =>
-                onDraftChange(comment.id, { ...draft, assigneeId })
-              }
-              onBodyChange={(body) => onDraftChange(comment.id, { ...draft, body })}
-              onSubmit={() => onCreateReply(comment.id)}
-              placeholder="Reply to this comment"
-              team={team}
-            />
-          </div>
-        )}
-
-        {shouldCollapseReplies && (
-          <button
-            type="button"
-            onClick={() => setShowReplies((value) => !value)}
-            style={{
-              margin: "4px 0 8px",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              borderRadius: "999px",
-              color: showReplies ? "var(--accent)" : "var(--text-muted)",
-              fontSize: "0.75rem",
-              fontWeight: 850,
-              padding: "5px 10px",
-              cursor: "pointer",
-            }}
-          >
-            <span aria-hidden="true">{showReplies ? "▴" : "▾"}</span>
-            {showReplies
-              ? "Hide replies"
-              : `Show ${hiddenReplyCount} repl${hiddenReplyCount === 1 ? "y" : "ies"}`}
-          </button>
-        )}
-
-        {shouldShowReplies && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-            {childComments.map((child) => (
-              <ThreadedComment
-                key={child.id}
-                comment={child}
-                comments={comments}
-                getDraft={getDraft}
-                isReplyOpen={isReplyOpen}
-                level={level + 1}
-                onCreateReply={onCreateReply}
-                onDraftChange={onDraftChange}
-                onToggleReply={onToggleReply}
-                onUpdateComment={onUpdateComment}
-                postLinkReady={postLinkReady}
-                team={team}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-function MetricPill({ label, tone, value }: { label: string; tone: "accent" | "green"; value: number }) {
-  const color = tone === "accent" ? "var(--accent)" : "var(--green)";
-  return (
-    <div className="metric-pill">
-      <span style={{ color: "var(--text-muted)", fontSize: "0.75rem", fontWeight: 800 }}>{label}</span>
-      <span style={{ color, fontSize: "0.95rem", fontWeight: 900 }}>{value}</span>
-    </div>
-  );
-}
-
-function TaskSection({
-  copiedLinkId, emptyText, onCompletePostTask, onCopyLink, onPostProofChange,
-  onStatusChange, postProofDrafts, tasks, team, title, tone = "active",
-}: {
-  copiedLinkId: string | null;
-  emptyText: string;
-  onCompletePostTask: (task: AssignedTask, publishedUrl: string) => void;
-  onCopyLink: (id: string, url?: string) => void | Promise<void>;
-  onPostProofChange: (postId: string, value: string) => void;
-  onStatusChange: (task: AssignedTask, status: Status) => void;
-  postProofDrafts: Record<string, string>;
-  tasks: AssignedTask[];
-  team: TeamMember[];
-  title: string;
-  tone?: "active" | "done";
-}) {
-  const isDoneSection = tone === "done";
-
-  return (
-    <section
-      style={{
-        background: "var(--bg-card)",
-        border: isDoneSection ? "0" : "1px solid var(--border)",
-        borderRadius: isDoneSection ? 0 : "12px",
-        overflow: "hidden",
-      }}
-    >
-      {!isDoneSection && (
-        <div
-          style={{
-            padding: "13px 16px",
-            borderBottom: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "12px",
-          }}
-        >
-          <div>
-            <h2 style={{ fontWeight: 850, fontSize: "0.98rem" }}>{title}</h2>
-            <p style={{ marginTop: "2px", color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 700 }}>
-              Finish these cards first. No guessing, one clear button per task.
-            </p>
-          </div>
-          <span
-            style={{
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border)",
-              borderRadius: "999px",
-              padding: "3px 11px",
-              fontSize: "0.75rem",
-              fontWeight: 850,
-              color: tasks.length > 0 ? "var(--accent)" : "var(--text-muted)",
-            }}
-          >
-            {tasks.length}
-          </span>
-        </div>
-      )}
-
-      {tasks.length === 0 ? (
-        <div style={{ padding: isDoneSection ? "24px" : "30px", textAlign: "center" }}>
-          <span style={{ fontSize: "1.8rem" }}>✓</span>
-          <p
-            style={{
-              marginTop: "8px",
-              fontSize: "0.84rem",
-              color: "var(--text-muted)",
-              fontWeight: 700,
-            }}
-          >
-            {emptyText}
-          </p>
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "1px",
-            background: "var(--border)",
-          }}
-        >
-          {tasks.map((task) => {
-            const proofValue = postProofDrafts[task.postId] ?? task.publishedUrl ?? "";
-            const proofReady = isUsableRedditLink(proofValue);
-            const postLinkReady = isUsableRedditLink(task.publishedUrl);
-            const isDone = task.status === "done";
-            const isPostTask = task.kind === "post";
-            const glowClass =
-              task.status === "done" ? "status-glow-done"
-              : task.status === "working" ? "status-glow-working"
-              : "status-glow-queued";
-            const actionTitle = isPostTask
-              ? "Post on Reddit"
-              : postLinkReady
-                ? "Comment on Reddit"
-                : "Waiting for post link";
-            const actionHelp = isPostTask
-              ? "Paste the final Reddit post link here. This unlocks the comment team."
-              : postLinkReady
-                ? "Open the Reddit post, add your comment, then mark this task done."
-                : `Waiting for ${getMemberName(team, task.postAssigneeId)} to paste the Reddit post link.`;
-
-            return (
-              <article
-                key={task.id}
-                className={`${glowClass} member-task-card ${isDone ? "is-done" : ""}`}
-              >
-                <div className="member-task-header">
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "7px", alignItems: "center", minWidth: 0 }}>
-                    <span style={{ fontWeight: 850, fontSize: "0.78rem", color: "var(--accent)" }}>
-                      {getSubredditName(task.subredditUrl)}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: "0.72rem",
-                        background: isPostTask ? "var(--accent-dim)" : "var(--indigo-dim)",
-                        color: isPostTask ? "#ff7043" : "var(--indigo)",
-                        borderRadius: "999px",
-                        padding: "2px 8px",
-                        fontWeight: 850,
-                      }}
-                    >
-                      {isPostTask ? "Post task" : "Comment task"}
-                    </span>
-                    <TeamMemberChip compact memberId={task.assigneeId} team={team} />
-                  </div>
-                  <StatusPill status={task.status} />
-                </div>
-
-                <h3 style={{ marginTop: "9px", fontSize: "0.98rem", fontWeight: 850, lineHeight: 1.35 }}>
-                  {task.title}
-                </h3>
-
-                <MemberTaskFlow task={task} team={team} />
-
-                <p
-                  style={{
-                    marginTop: "11px",
-                    whiteSpace: "pre-wrap",
-                    fontSize: "0.84rem",
-                    lineHeight: 1.7,
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {task.body}
-                </p>
-
-                <div className="member-action-panel">
-                  <div className="member-action-row">
-                    <div>
-                      <p style={{ fontWeight: 850, fontSize: "0.84rem" }}>{actionTitle}</p>
-                      <p style={{ marginTop: "3px", fontSize: "0.76rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                        {actionHelp}
-                      </p>
-                    </div>
-                    {isDone && (
-                      <button
-                        type="button"
-                        onClick={() => onStatusChange(task, "queued")}
-                        className="btn-ghost"
-                        style={{ borderRadius: "999px", padding: "7px 14px", fontSize: "0.78rem" }}
-                      >
-                        Move back
-                      </button>
-                    )}
-                  </div>
-
-                  {isPostTask ? (
-                    <>
-                      <div className="member-proof-row">
-                        <input
-                          value={proofValue}
-                          onChange={(e) => onPostProofChange(task.postId, e.target.value)}
-                          placeholder="https://www.reddit.com/r/.../comments/..."
-                          className="input"
-                          disabled={isDone}
-                          style={{ height: "40px", fontSize: "0.82rem" }}
-                        />
-                        {!isDone && (
-                          <button
-                            type="button"
-                            onClick={() => onCompletePostTask(task, proofValue)}
-                            disabled={!proofReady}
-                            className="btn-primary"
-                            style={{ borderRadius: "999px", padding: "8px 18px", whiteSpace: "nowrap" }}
-                          >
-                            Mark done
-                          </button>
-                        )}
-                      </div>
-                      <p
-                        style={{
-                          marginTop: "7px",
-                          fontSize: "0.75rem",
-                          fontWeight: 800,
-                          color: proofReady ? "var(--green)" : "#ff7043",
-                        }}
-                      >
-                        {proofReady ? "Link ready." : "Paste a valid Reddit post link first."}
-                      </p>
-                      {postLinkReady && task.publishedUrl && (
-                        <a
-                          href={task.publishedUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{
-                            marginTop: "7px",
-                            display: "inline-block",
-                            fontSize: "0.75rem",
-                            fontWeight: 800,
-                            color: "#60a5fa",
-                            wordBreak: "break-all",
-                          }}
-                        >
-                          Open posted link
-                        </a>
-                      )}
-                    </>
-                  ) : postLinkReady && task.publishedUrl ? (
-                    <div style={{ marginTop: "10px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                      <a
-                        href={task.publishedUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="btn-primary"
-                        style={{ fontSize: "0.8rem", padding: "8px 16px", borderRadius: "999px", textDecoration: "none" }}
-                      >
-                        Open post
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => onCopyLink(task.id, task.publishedUrl)}
-                        className="btn-ghost"
-                        style={{ borderRadius: "999px", padding: "8px 16px", fontSize: "0.8rem" }}
-                      >
-                        {copiedLinkId === task.id ? "Copied" : "Copy link"}
-                      </button>
-                      {!isDone && (
-                        <button
-                          type="button"
-                          onClick={() => onStatusChange(task, "done")}
-                          className="btn-primary"
-                          style={{ borderRadius: "999px", padding: "8px 16px", fontSize: "0.8rem" }}
-                        >
-                          Mark done
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <p style={{ marginTop: "9px", color: "var(--yellow)", fontSize: "0.78rem", fontWeight: 800 }}>
-                      This card will unlock when the Reddit post link is ready.
-                    </p>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: "block" }}>
-      <span
-        style={{
-          display: "block",
-          marginBottom: "5px",
-          fontSize: "0.72rem",
-          fontWeight: 700,
-          color: "var(--text-muted)",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-        }}
-      >
-        {label}
-      </span>
-      {children}
-    </label>
   );
 }

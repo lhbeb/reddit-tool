@@ -108,14 +108,14 @@ Status: Complete.
 
 Goal: admin can find any task quickly.
 
-Completed:
+Baseline:
 
 - Search input exists.
 - Status filter exists.
 - Assignee filter exists.
 - Active work is the default.
 
-Completed:
+Completed in Chunk 5:
 
 - Add sort options: newest first, oldest first, by assignee.
 - Make metric cards clickable filters.

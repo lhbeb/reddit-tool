@@ -119,7 +119,7 @@ a { color: inherit; }
   color: #fff;
   font-weight: 800;
   font-size: 0.82rem;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   padding: 0.6rem 1.2rem;
   border-radius: var(--radius-md);
   border: none;
@@ -152,7 +152,7 @@ a { color: inherit; }
   color: var(--text-secondary);
   font-weight: 700;
   font-size: 0.78rem;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   padding: 0.5rem 1rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-bright);
@@ -242,6 +242,17 @@ a { color: inherit; }
 .spin { animation: spin 0.9s linear infinite; }
 
 /* ─── Status glow borders on kanban cards ────────────────────── */
-.status-glow-queued  { border-left: 3px solid var(--accent); box-shadow: inset 3px 0 12px rgba(255,69,0,0.10); }
-.status-glow-working { border-left: 3px solid var(--yellow); box-shadow: inset 3px 0 12px rgba(234,179,8,0.10); }
-.status-glow-done    { border-left: 3px solid var(--green);  box-shadow: inset 3px 0 12px rgba(34,197,94,0.10); }
+.status-glow-queued  { border-left: 3px solid var(--accent); }
+.status-glow-working { border-left: 3px solid var(--yellow); }
+.status-glow-done    { border-left: 3px solid var(--green);  }
+.status-glow-closed  { border-left: 3px solid var(--text-muted); }
+
+@media (max-width: 760px) {
+  .comment-composer {
+    --comment-composer-grid: 1fr;
+  }
+
+  .comment-composer textarea {
+    min-height: 96px;
+  }
+}
