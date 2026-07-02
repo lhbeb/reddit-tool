@@ -1,7 +1,8 @@
 "use client";
 
 import type React from "react";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
 import {
   avatarColor,
@@ -87,9 +88,20 @@ export function Avatar({
 /* ═══════════════════════════════════════════════════════════════
    PostCard
 ═══════════════════════════════════════════════════════════════ */
-export function PostCard({
-  post, team, commentDraft, commentDrafts, openReplyComposerIds,
-  onCommentDraftChange, onCreateComment, onDeletePost, onUpdatePost, onUpdateComment, onToggleReply,
+export function TaskDetailsModal({
+  post,
+  team,
+  commentDraft,
+  commentDrafts,
+  openReplyComposerIds,
+  onCommentDraftChange,
+  onCreateComment,
+  onDeletePost,
+  onUpdatePost,
+  onUpdateComment,
+  onToggleReply,
+  currentUser: _currentUser,
+  onClose,
 }: {
   post: RedditPost;
   team: TeamMember[];
@@ -103,32 +115,26 @@ export function PostCard({
   onUpdateComment: (postId: string, commentId: string, changes: Partial<RedditComment>) => void;
   onToggleReply: (commentId: string) => void;
   currentUser: TeamMember;
-  onDeleteTask: (task: AssignedTask) => void;
+  onClose: () => void;
 }) {
   const [showControls, setShowControls] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
   const [isRootComposerOpen, setIsRootComposerOpen] = useState(false);
-  const totalComments = post.comments.length;
+
   const finishedComments = post.comments.filter((c) => c.status === "done").length;
+  const totalComments = post.comments.length;
   const activeComments = post.comments.filter((c) => isOpenStatus(c.status)).length;
-  const openComments = activeComments;
   const rootComments = getChildComments(post.comments);
   const postLinkReady = isUsableRedditLink(post.publishedUrl);
-  const commentProgressText =
-    totalComments === 0
-      ? "0 comments"
-      : activeComments === 0
-        ? "All comments done"
-        : `${activeComments} active comment${activeComments === 1 ? "" : "s"}`;
+
   const expandedCommentProgressText =
     totalComments > 0 ? `${finishedComments}/${totalComments} comments done` : "0 comments";
   const commentTone =
-    totalComments > 0 && openComments === 0
+    totalComments > 0 && activeComments === 0
       ? "var(--green)"
       : totalComments > 0
         ? "var(--yellow)"
         : "var(--text-muted)";
-  const glowClass = getStatusGlowClass(post.softDeleted ? "cancelled" : post.status);
+
   const rootCommentDraftReady = commentDraft.body.trim().length > 0 && Boolean(commentDraft.assigneeId);
 
   async function submitRootComment() {
@@ -138,105 +144,95 @@ export function PostCard({
     return created;
   }
 
-  function toggleExpanded() {
-    if (isExpanded) setShowControls(false);
-    if (isExpanded) setIsRootComposerOpen(false);
-    setIsExpanded((value) => !value);
-  }
-
   return (
-    <article
-      className={glowClass}
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={`modal-title-${post.id}`}
+      onClick={onClose}
       style={{
-        width: "100%",
-        borderRadius: "14px",
-        background: "var(--bg-card)",
-        border: "1px solid var(--border-bright)",
-        overflow: "hidden",
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        background: "rgba(0,0,0,0.65)",
+        backdropFilter: "blur(4px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "20px",
+        cursor: "default",
       }}
     >
-      {/* ── Collapsed header ── */}
-      <div style={{ padding: "16px 18px" }}>
-        {/* Row 1: Avatar+Name (left) ↔ Subreddit+Status+Expand (right) */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-          <TeamMemberChip memberId={post.assigneeId} team={team} />
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%",
+          maxWidth: "800px",
+          maxHeight: "90vh",
+          background: "var(--bg-card)",
+          border: "1px solid var(--border-bright)",
+          borderRadius: "16px",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Modal Header */}
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "16px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <TeamMemberChip memberId={post.assigneeId} team={team} />
             <span style={{ fontWeight: 800, fontSize: "0.82rem", color: "var(--accent)" }}>
               r/{getSubredditName(post.subredditUrl)}
             </span>
             <StatusPill status={post.status} />
-            <button
-              type="button"
-              aria-expanded={isExpanded}
-              onClick={toggleExpanded}
-              className={isExpanded ? "btn-ghost" : "btn-primary"}
-              style={{ height: "32px", padding: "0 14px", fontSize: "0.78rem", borderRadius: "8px" }}
-            >
-              {isExpanded ? "Collapse" : "Expand"}
-            </button>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-ghost"
+            style={{
+              height: "32px",
+              width: "32px",
+              borderRadius: "50%",
+              padding: 0,
+              display: "grid",
+              placeItems: "center",
+              fontSize: "1.1rem",
+              cursor: "pointer",
+            }}
+            aria-label="Close details"
+          >
+            X
+          </button>
         </div>
 
-        {/* Row 2: Post title */}
-        <h3
-          title={post.title}
-          style={{
-            marginTop: "12px",
-            fontSize: "1.02rem",
-            fontWeight: 850,
-            lineHeight: 1.4,
-            color: "var(--text-primary)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-          }}
-        >
-          {post.title}
-        </h3>
-
-        {/* Row 3: Comment summary strip */}
-        <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <span
+        {/* Scrollable Content */}
+        <div style={{ overflowY: "auto", flex: 1, padding: "20px" }}>
+          <h3
+            id={`modal-title-${post.id}`}
             style={{
-              fontSize: "0.75rem",
-              fontWeight: 800,
-              color: commentTone,
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border)",
-              borderRadius: "999px",
-              padding: "3px 10px",
-              whiteSpace: "nowrap",
+              fontSize: "1.25rem",
+              fontWeight: 900,
+              lineHeight: 1.35,
+              color: "var(--text-primary)",
+              marginBottom: "16px",
             }}
           >
-            {commentProgressText}
-          </span>
-          <span
-            style={{
-              fontSize: "0.75rem",
-              fontWeight: 700,
-              color: postLinkReady ? "var(--green)" : "var(--text-muted)",
-              background: "var(--bg-elevated)",
-              border: `1px solid ${postLinkReady ? "rgba(34,197,94,0.25)" : "var(--border)"}`,
-              borderRadius: "999px",
-              padding: "3px 10px",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {postLinkReady ? "✓ Post live" : "⏳ Waiting for link"}
-          </span>
-          <span style={{ color: "var(--text-muted)", fontSize: "0.73rem", fontWeight: 700 }}>
-            {timeAgo(post.createdAt)}
-          </span>
-        </div>
-      </div>
+            {post.title}
+          </h3>
 
-      {/* ── Expanded body ── */}
-      {isExpanded && (
-        <div style={{ borderTop: "1px solid var(--border)" }}>
           {/* Post body */}
-          <div style={{ padding: "16px 18px" }}>
+          <div style={{ marginBottom: "20px" }}>
             <p style={{ fontSize: "0.72rem", fontWeight: 800, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
               Post body
             </p>
@@ -262,7 +258,7 @@ export function PostCard({
                   className="btn-dark"
                   style={{ fontSize: "0.76rem", padding: "7px 12px" }}
                 >
-                  ↗ Open subreddit
+                  Open Subreddit
                 </a>
               )}
               {postLinkReady ? (
@@ -273,7 +269,7 @@ export function PostCard({
                   className="btn-dark"
                   style={{ fontSize: "0.76rem", padding: "7px 12px" }}
                 >
-                  ↗ Open Reddit post
+                  Open Reddit Post
                 </a>
               ) : (
                 <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 700, alignSelf: "center" }}>
@@ -284,12 +280,12 @@ export function PostCard({
           </div>
 
           {/* Assignment flow */}
-          <div style={{ padding: "0 18px 4px" }}>
+          <div style={{ marginBottom: "20px" }}>
             <AssignmentFlow post={post} team={team} />
           </div>
 
           {/* Admin controls toggle */}
-          <div style={{ padding: "8px 18px 16px" }}>
+          <div style={{ marginBottom: "20px" }}>
             <button
               type="button"
               onClick={() => setShowControls((value) => !value)}
@@ -306,7 +302,7 @@ export function PostCard({
                 cursor: "pointer",
               }}
             >
-              <span aria-hidden="true">{showControls ? "▾" : "▸"}</span>
+              <span aria-hidden="true">{showControls ? "v" : ">"}</span>
               Admin controls
             </button>
 
@@ -373,7 +369,7 @@ export function PostCard({
           </div>
 
           {/* Comments section */}
-          <div style={{ borderTop: "1px solid var(--border)", padding: "16px 18px" }}>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "20px" }}>
             <div
               style={{
                 display: "flex",
@@ -482,8 +478,180 @@ export function PostCard({
             </div>
           </div>
         </div>
+
+        {/* Modal Footer */}
+        <div
+          style={{
+            padding: "12px 20px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            justifyContent: "flex-end",
+            background: "var(--bg-elevated)",
+          }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-ghost"
+            style={{ height: "36px", padding: "0 18px", fontSize: "0.8rem" }}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function PostCard({
+  post, team, commentDraft, commentDrafts, openReplyComposerIds,
+  onCommentDraftChange, onCreateComment, onDeletePost, onUpdatePost, onUpdateComment, onToggleReply,
+  currentUser,
+}: {
+  post: RedditPost;
+  team: TeamMember[];
+  commentDraft: CommentDraft;
+  commentDrafts: Record<string, CommentDraft>;
+  openReplyComposerIds: Record<string, boolean>;
+  onCommentDraftChange: (key: string, value: CommentDraft) => void;
+  onCreateComment: (postId: string, parentId?: string | null) => boolean | Promise<boolean>;
+  onDeletePost: (postId: string) => void;
+  onUpdatePost: (postId: string, changes: Partial<RedditPost>) => void;
+  onUpdateComment: (postId: string, commentId: string, changes: Partial<RedditComment>) => void;
+  onToggleReply: (commentId: string) => void;
+  currentUser: TeamMember;
+  onDeleteTask: (task: AssignedTask) => void;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const totalComments = post.comments.length;
+  const activeComments = post.comments.filter((c) => isOpenStatus(c.status)).length;
+  const openComments = activeComments;
+  const postLinkReady = isUsableRedditLink(post.publishedUrl);
+  const commentProgressText =
+    totalComments === 0
+      ? "0 comments"
+      : activeComments === 0
+        ? "All comments done"
+        : `${activeComments} active comment${activeComments === 1 ? "" : "s"}`;
+  const commentTone =
+    totalComments > 0 && openComments === 0
+      ? "var(--green)"
+      : totalComments > 0
+        ? "var(--yellow)"
+        : "var(--text-muted)";
+  const glowClass = getStatusGlowClass(post.softDeleted ? "cancelled" : post.status);
+
+  function toggleExpanded() {
+    setIsExpanded((value) => !value);
+  }
+
+  return (
+    <>
+      <article
+        className={`${glowClass} task-card-clickable`}
+        onClick={toggleExpanded}
+        style={{
+          width: "100%",
+          borderRadius: "14px",
+          background: "var(--bg-card)",
+          border: "1px solid var(--border-bright)",
+          overflow: "hidden",
+        }}
+      >
+        {/* Collapsed header */}
+        <div style={{ padding: "16px 18px" }}>
+          {/* Row 1: Avatar+Name (left) ↔ Subreddit+Status (right) */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+            <TeamMemberChip memberId={post.assigneeId} team={team} />
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+              <span style={{ fontWeight: 800, fontSize: "0.82rem", color: "var(--accent)" }}>
+                r/{getSubredditName(post.subredditUrl)}
+              </span>
+              <StatusPill status={post.status} />
+            </div>
+          </div>
+
+          {/* Row 2: Post title */}
+          <h3
+            title={post.title}
+            style={{
+              marginTop: "12px",
+              fontSize: "1.02rem",
+              fontWeight: 850,
+              lineHeight: 1.4,
+              color: "var(--text-primary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+            }}
+          >
+            {post.title}
+          </h3>
+
+          {/* Row 3: Comment summary strip */}
+          <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <span
+              style={{
+                fontSize: "0.75rem",
+                fontWeight: 800,
+                color: commentTone,
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border)",
+                borderRadius: "999px",
+                padding: "3px 10px",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {commentProgressText}
+            </span>
+            <span
+              style={{
+                fontSize: "0.75rem",
+                fontWeight: 700,
+                color: postLinkReady ? "var(--green)" : "var(--text-muted)",
+                background: "var(--bg-elevated)",
+                border: `1px solid ${postLinkReady ? "rgba(34,197,94,0.25)" : "var(--border)"}`,
+                borderRadius: "999px",
+                padding: "3px 10px",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {postLinkReady ? "✓ Post live" : "⏳ Waiting for link"}
+            </span>
+            <span style={{ color: "var(--text-muted)", fontSize: "0.73rem", fontWeight: 700 }}>
+              {timeAgo(post.createdAt)}
+            </span>
+          </div>
+        </div>
+      </article>
+
+      {isExpanded && mounted && createPortal(
+        <TaskDetailsModal
+          post={post}
+          team={team}
+          commentDraft={commentDraft}
+          commentDrafts={commentDrafts}
+          openReplyComposerIds={openReplyComposerIds}
+          onCommentDraftChange={onCommentDraftChange}
+          onCreateComment={onCreateComment}
+          onDeletePost={onDeletePost}
+          onUpdatePost={onUpdatePost}
+          onUpdateComment={onUpdateComment}
+          onToggleReply={onToggleReply}
+          currentUser={currentUser}
+          onClose={toggleExpanded}
+        />,
+        document.body
       )}
-    </article>
+    </>
   );
 }
 
@@ -492,6 +660,7 @@ export function PostCard({
 ═══════════════════════════════════════════════════════════════ */
 export function TopNav({
   currentUser, currentUserIndex, notifications, pendingCount, onLogout, team,
+  searchQuery = "", onSearchChange,
 }: {
   currentUser: TeamMember;
   currentUserIndex: number;
@@ -499,6 +668,8 @@ export function TopNav({
   pendingCount: number;
   onLogout: () => void;
   team: TeamMember[];
+  searchQuery?: string;
+  onSearchChange?: (val: string) => void;
 }) {
   return (
     <nav
@@ -553,6 +724,51 @@ export function TopNav({
           <span style={{ fontSize: "0.82rem", fontWeight: 700 }}>{currentUser.name}</span>
         </div>
       </div>
+
+      {onSearchChange && (
+        <div style={{ flex: 1, maxWidth: "480px", margin: "0 24px" }}>
+          <div style={{ position: "relative" }}>
+            <svg
+              style={{
+                position: "absolute",
+                left: "12px",
+                top: "50%",
+                transform: "translateY(-50%)",
+                width: "16px",
+                height: "16px",
+                color: "var(--text-muted)",
+              }}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="Search title, comment, subreddit, teammate..."
+              className="input"
+              style={{
+                height: "36px",
+                paddingLeft: "36px",
+                fontSize: "0.82rem",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-bright)",
+                borderRadius: "20px",
+                width: "100%",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
         <NotificationBell count={pendingCount} notifications={notifications} team={team} />
         <button

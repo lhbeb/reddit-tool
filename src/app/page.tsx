@@ -6,6 +6,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
 } from "react";
 import Image from "next/image";
 import {
@@ -82,13 +83,22 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [adminFiltersReady, setAdminFiltersReady] = useState(false);
   const [isCreatePostOpen, setIsCreatePostOpen] = useState(false);
-  const [isTeamPanelOpen, setIsTeamPanelOpen] = useState(false);
   const [isSubmittingPost, setIsSubmittingPost] = useState(false);
   const [postDraft, setPostDraft] = useState({
     title: "", postBody: "", subredditUrl: "", assigneeId: "",
   });
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [postError, setPostError] = useState("");
+  const [isCreateCommentOpen, setIsCreateCommentOpen] = useState(false);
+  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const [commentModalError, setCommentModalError] = useState("");
+  const [commentModalDraft, setCommentModalDraft] = useState({
+    postId: "", body: "", assigneeId: "", isAiDraft: false
+  });
+  const [isPostDropdownOpen, setIsPostDropdownOpen] = useState(false);
+  const [postSearchQuery, setPostSearchQuery] = useState("");
+  const postDropdownRef = useRef<HTMLDivElement>(null);
+
   const [isAssignDropdownOpen, setIsAssignDropdownOpen] = useState(false);
   const [commentDrafts, setCommentDrafts] = useState<Record<string, CommentDraft>>({});
   const [postProofDrafts, setPostProofDrafts] = useState<Record<string, string>>({});
@@ -159,6 +169,20 @@ export default function Home() {
 
     return () => { supabase.removeChannel(channel); };
   }, [loadPosts, loadTeam]);
+
+  // Click outside listener for global comment creator post dropdown
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (postDropdownRef.current && !postDropdownRef.current.contains(event.target as Node)) {
+        setIsPostDropdownOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentUser?.isAdmin || adminFiltersReady || team.length === 0) return;
@@ -588,13 +612,7 @@ export default function Home() {
     };
   }, [activeAssignee, activeScope, activeStatus, posts.length, searchQuery, team]);
   /* ── Handlers ─────────────────────────────────────────────── */
-  function resetAdminFilters() {
-    setSearchQuery("");
-    setActiveAssignee("all");
-    setActiveStatus("active");
-    setActiveScope("all");
-    setSortMode("newest");
-  }
+
 
   function applyMetricFilter(metric: "posts" | "comments" | "queued" | "done") {
     setSearchQuery("");
@@ -714,6 +732,56 @@ export default function Home() {
       }
     } finally {
       setIsSubmittingPost(false);
+    }
+  }
+
+  async function handleGlobalCreateComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCommentModalError("");
+    const { postId, body, assigneeId, isAiDraft } = commentModalDraft;
+    if (!postId) { setCommentModalError("Please select a post."); return; }
+    if (!body.trim()) { setCommentModalError("Please enter comment text."); return; }
+    if (!assigneeId) { setCommentModalError("Please select an assignee."); return; }
+
+    setIsSubmittingComment(true);
+    try {
+      const insertPayload: Record<string, string | boolean> = {
+        post_id: postId,
+        body: body.trim(),
+        assignee_id: assigneeId,
+        status: "queued",
+        is_ai_draft: isAiDraft,
+      };
+      if (currentUser?.id) insertPayload.created_by_id = currentUser.id;
+
+      const fallbackColumns = ["created_by_id", "is_ai_draft"];
+      const pendingPayload = { ...insertPayload };
+      let { error } = await supabase.from("reddit_comments").insert(pendingPayload);
+
+      while (error) {
+        const missingColumn = fallbackColumns.find(
+          (column) => column in pendingPayload && isMissingColumnError(error, column),
+        );
+        if (!missingColumn) break;
+
+        delete pendingPayload[missingColumn];
+        ({ error } = await supabase.from("reddit_comments").insert(pendingPayload));
+      }
+
+      if (error) {
+        const message = formatSupabaseError(error);
+        console.error("[global-create-comment] Supabase error:", message);
+        setCommentModalError(`Failed to save: ${message}`);
+        return;
+      }
+
+      setCommentModalDraft({ postId: "", body: "", assigneeId, isAiDraft: false });
+      setIsCreateCommentOpen(false);
+      setIsPostDropdownOpen(false);
+      setPostSearchQuery("");
+      await loadPosts();
+    } finally {
+      setIsSubmittingComment(false);
     }
   }
 
@@ -906,22 +974,7 @@ export default function Home() {
     });
   }
 
-  function exportJson() {
-    const blob = new Blob([JSON.stringify({ team, posts }, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "reddit-assignments.json";
-    link.click();
-    URL.revokeObjectURL(url);
-  }
 
-  async function handleTeamNameChange(id: string, name: string) {
-    setTeam((cur) => cur.map((m) => (m.id === id ? { ...m, name } : m)));
-    await supabase.from("team_members").update({ display_name: name }).eq("id", id);
-  }
 
   /* ── Loading ─────────────────────────────────────────────── */
   if (loading) {
@@ -1078,6 +1131,8 @@ export default function Home() {
           pendingCount={pendingTaskCount}
           onLogout={handleLogout}
           team={team}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
         />
 
         <section
@@ -1466,6 +1521,8 @@ export default function Home() {
         pendingCount={pendingTaskCount}
         onLogout={handleLogout}
         team={team}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
       />
 
       {isCreatePostOpen && (
@@ -1741,6 +1798,318 @@ export default function Home() {
         </div>
       )}
 
+      {isCreateCommentOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-comment-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            background: "rgba(0,0,0,0.62)",
+            display: "grid",
+            placeItems: "center",
+            padding: "24px",
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !isSubmittingComment) {
+              setIsCreateCommentOpen(false);
+            }
+          }}
+        >
+          <div
+            className="glass-card"
+            style={{
+              width: "min(560px, 100%)",
+              maxHeight: "min(760px, calc(100vh - 48px))",
+              overflow: "auto",
+              background: "var(--bg-card)",
+              borderRadius: "18px",
+              boxShadow: "var(--shadow-lg)",
+            }}
+          >
+            <div
+              style={{
+                padding: "18px 20px",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "16px",
+              }}
+            >
+              <div>
+                <h2 id="create-comment-title" style={{ fontWeight: 900, fontSize: "1.1rem" }}>
+                  Add comment assignment
+                </h2>
+                <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "3px" }}>
+                  Choose an existing post, write the comment, and assign it to a team member.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateCommentOpen(false)}
+                disabled={isSubmittingComment}
+                className="btn-ghost"
+                style={{ width: "34px", height: "34px", padding: 0, borderRadius: "50%" }}
+                aria-label="Close add comment"
+              >
+                ×
+              </button>
+            </div>
+            <form
+              onSubmit={handleGlobalCreateComment}
+              style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}
+            >
+              <Field label="Choose Reddit post">
+                <div ref={postDropdownRef} style={{ position: "relative" }}>
+                  {/* Custom Toggle Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsPostDropdownOpen(!isPostDropdownOpen)}
+                    className="input"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "10px 14px",
+                      cursor: "pointer",
+                      background: "var(--bg-elevated)",
+                      textAlign: "left",
+                      height: "auto",
+                      minHeight: "44px",
+                    }}
+                  >
+                    {(() => {
+                      const selectedPost = posts.find(p => p.id === commentModalDraft.postId);
+                      if (!selectedPost) return <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Select a post...</span>;
+                      const postAssignee = team.find(m => m.id === selectedPost.assigneeId) || team[0];
+                      const postAssigneeIndex = team.findIndex(m => m.id === selectedPost.assigneeId);
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, width: "100%" }}>
+                          <Avatar member={postAssignee} size={24} index={postAssigneeIndex >= 0 ? postAssigneeIndex : 0} />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <span style={{ fontWeight: 855, fontSize: "0.76rem", color: "var(--accent)", display: "block" }}>
+                              r/{getSubredditName(selectedPost.subredditUrl)}
+                            </span>
+                            <span style={{ fontWeight: 700, fontSize: "0.82rem", color: "var(--text-primary)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {selectedPost.title}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ flexShrink: 0, marginLeft: "8px" }}>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+
+                  {/* Dropdown Box */}
+                  {isPostDropdownOpen && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 4px)",
+                        left: 0,
+                        right: 0,
+                        background: "var(--bg-card)",
+                        border: "1px solid var(--border-bright)",
+                        borderRadius: "10px",
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                        zIndex: 50,
+                        display: "flex",
+                        flexDirection: "column",
+                        maxHeight: "300px",
+                      }}
+                    >
+                      {/* Search Input */}
+                      <div style={{ padding: "8px", borderBottom: "1px solid var(--border)" }}>
+                        <input
+                          type="text"
+                          placeholder="Search posts by title, subreddit or assignee..."
+                          value={postSearchQuery}
+                          onChange={(e) => setPostSearchQuery(e.target.value)}
+                          className="input"
+                          style={{ height: "36px", fontSize: "0.82rem" }}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()} // Prevent close on click
+                        />
+                      </div>
+
+                      {/* List Option Items */}
+                      <ul
+                        style={{
+                          overflowY: "auto",
+                          padding: "6px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "2px",
+                          listStyle: "none",
+                          margin: 0
+                        }}
+                      >
+                        {(() => {
+                          const filtered = posts
+                            .filter((p) => !p.softDeleted)
+                            .filter((p) => {
+                              const norm = postSearchQuery.toLowerCase().trim();
+                              if (!norm) return true;
+                              const sub = getSubredditName(p.subredditUrl).toLowerCase();
+                              const title = p.title.toLowerCase();
+                              const assigneeName = getMemberName(team, p.assigneeId).toLowerCase();
+                              return sub.includes(norm) || title.includes(norm) || assigneeName.includes(norm);
+                            });
+
+                          if (filtered.length === 0) {
+                            return (
+                              <li style={{ padding: "12px", textAlign: "center", color: "var(--text-muted)", fontSize: "0.82rem", fontWeight: 700 }}>
+                                No matching posts found
+                              </li>
+                            );
+                          }
+
+                          return filtered.map((p) => {
+                            const postAssignee = team.find(m => m.id === p.assigneeId) || team[0];
+                            const postAssigneeIndex = team.findIndex(m => m.id === p.assigneeId);
+                            const isSelected = commentModalDraft.postId === p.id;
+                            return (
+                              <li key={p.id}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCommentModalDraft((cur) => ({ ...cur, postId: p.id }));
+                                    setIsPostDropdownOpen(false);
+                                    setPostSearchQuery("");
+                                  }}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "10px",
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    background: isSelected ? "var(--accent-dim)" : "transparent",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                    transition: "background 0.15s ease",
+                                    minWidth: 0,
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (!isSelected) e.currentTarget.style.background = "var(--bg-elevated)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (!isSelected) e.currentTarget.style.background = "transparent";
+                                  }}
+                                >
+                                  <Avatar member={postAssignee} size={28} index={postAssigneeIndex >= 0 ? postAssigneeIndex : 0} />
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <span style={{
+                                      fontWeight: 800,
+                                      fontSize: "0.72rem",
+                                      color: isSelected ? "var(--accent)" : "var(--text-secondary)",
+                                      display: "block"
+                                    }}>
+                                      r/{getSubredditName(p.subredditUrl)}
+                                    </span>
+                                    <span style={{
+                                      fontWeight: isSelected ? 700 : 500,
+                                      fontSize: "0.82rem",
+                                      color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
+                                      display: "block",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap"
+                                    }}>
+                                      {p.title}
+                                    </span>
+                                  </div>
+                                </button>
+                              </li>
+                            );
+                          });
+                        })()}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </Field>
+              <Field label="Comment text">
+                <textarea
+                  value={commentModalDraft.body}
+                  onChange={(e) =>
+                    setCommentModalDraft((cur) => ({ ...cur, body: e.target.value }))
+                  }
+                  placeholder="Paste the comment text here"
+                  className="input"
+                  style={{ minHeight: "120px", resize: "vertical" }}
+                />
+              </Field>
+              <Field label="Assign comment to">
+                <select
+                  value={commentModalDraft.assigneeId}
+                  onChange={(e) =>
+                    setCommentModalDraft((cur) => ({ ...cur, assigneeId: e.target.value }))
+                  }
+                  className="input"
+                  style={{ height: "40px" }}
+                >
+                  <option value="">Select teammate...</option>
+                  {team.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "4px 0" }}>
+                <input
+                  type="checkbox"
+                  id="comment-modal-ai-draft"
+                  checked={commentModalDraft.isAiDraft}
+                  onChange={(e) =>
+                    setCommentModalDraft((cur) => ({ ...cur, isAiDraft: e.target.checked }))
+                  }
+                  style={{ width: "16px", height: "16px", cursor: "pointer" }}
+                />
+                <label
+                  htmlFor="comment-modal-ai-draft"
+                  style={{ fontSize: "0.82rem", fontWeight: 700, cursor: "pointer", userSelect: "none" }}
+                >
+                  AI draft (shows badge and allows copy)
+                </label>
+              </div>
+
+              {commentModalError && (
+                <div style={{ background: "rgba(255,69,0,0.1)", border: "1px solid rgba(255,69,0,0.3)", borderRadius: "8px", padding: "10px 14px" }}>
+                  <p style={{ fontSize: "0.78rem", fontWeight: 700, color: "#ff7043" }}>{commentModalError}</p>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateCommentOpen(false)}
+                  disabled={isSubmittingComment}
+                  className="btn-ghost"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingComment}
+                  className="btn-primary"
+                  style={{ minWidth: "112px", background: "var(--blue)", color: "#fff" }}
+                >
+                  {isSubmittingComment ? "Saving..." : "Assign"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Header metrics */}
       <section
         style={{
@@ -1767,17 +2136,52 @@ export default function Home() {
                 Scan active Reddit work, open one task, then assign the next step.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setPostError("");
-                setIsCreatePostOpen(true);
-              }}
-              className="btn-primary"
-              style={{ padding: "10px 18px", borderRadius: "999px", whiteSpace: "nowrap" }}
-            >
-              + New post
-            </button>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "nowrap" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setCommentModalError("");
+                  const firstActivePost = posts.find((p) => !p.softDeleted)?.id || "";
+                  setCommentModalDraft({
+                    postId: firstActivePost,
+                    body: "",
+                    assigneeId: team[0]?.id || "",
+                    isAiDraft: false,
+                  });
+                  setIsCreateCommentOpen(true);
+                }}
+                className="btn-primary"
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: "999px",
+                  whiteSpace: "nowrap",
+                  background: "var(--blue)",
+                  color: "#fff",
+                  boxShadow: "0 0 0 0 rgba(59,130,246,0.28)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "#2563eb";
+                  e.currentTarget.style.boxShadow = "0 4px 16px rgba(59,130,246,0.28)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "var(--blue)";
+                  e.currentTarget.style.boxShadow = "none";
+                }}
+              >
+                + New comment
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPostError("");
+                  setIsCreatePostOpen(true);
+                }}
+                className="btn-primary"
+                style={{ padding: "10px 18px", borderRadius: "999px", whiteSpace: "nowrap" }}
+              >
+                + New post
+              </button>
+            </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
             <MetricCard
@@ -1822,308 +2226,156 @@ export default function Home() {
           maxWidth: "1400px",
           margin: "0 auto",
           padding: "24px",
-          display: "grid",
+          display: "flex",
+          flexDirection: "column",
           gap: "24px",
-          gridTemplateColumns: "340px minmax(0,1fr)",
         }}
         className="admin-grid"
       >
-        {/* Sidebar */}
-        <aside style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <div
-            style={{
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              borderRadius: "14px",
-              overflow: "hidden",
-            }}
-          >
-            <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-              <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Find tasks</h2>
-              <p style={{ marginTop: "3px", color: "var(--text-muted)", fontSize: "0.76rem", lineHeight: 1.5 }}>
-                Search first, then narrow by person or status.
-              </p>
-            </div>
-            <div style={{ padding: "16px 18px 18px", display: "grid", gap: "12px" }}>
-              <Field label="Search">
-                <input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Title, comment, subreddit, person"
-                  className="input"
-                  style={{ height: "40px", fontSize: "0.82rem" }}
-                />
-              </Field>
-              <Field label="Person">
-                <select
-                  value={activeAssignee}
-                  onChange={(e) => setActiveAssignee(e.target.value)}
-                  className="input"
-                  style={{ height: "40px", fontSize: "0.82rem" }}
-                >
-                  <option value="all">All people</option>
-                  {team.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Show">
-                <select
-                  value={activeScope}
-                  onChange={(e) => setActiveScope(e.target.value as ScopeFilter)}
-                  className="input"
-                  style={{ height: "40px", fontSize: "0.82rem" }}
-                >
-                  <option value="all">All posts</option>
-                  <option value="with-comments">With comments</option>
-                </select>
-              </Field>
-              <Field label="Status">
-                <select
-                  value={activeStatus}
-                  onChange={(e) => setActiveStatus(e.target.value as StatusFilter)}
-                  className="input"
-                  style={{ height: "40px", fontSize: "0.82rem" }}
-                >
-                  <option value="active">Active work</option>
-                  <option value="all">All statuses</option>
-                  {Object.entries(statusLabels).map(([v, l]) => (
-                    <option key={v} value={v}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Sort">
-                <select
-                  value={sortMode}
-                  onChange={(e) => setSortMode(e.target.value as SortMode)}
-                  className="input"
-                  style={{ height: "40px", fontSize: "0.82rem" }}
-                >
-                  {Object.entries(sortLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  borderTop: "1px solid var(--border)",
-                  paddingTop: "12px",
-                  color: "var(--text-muted)",
-                  fontSize: "0.76rem",
-                  fontWeight: 700,
-                }}
-              >
-                <span>{filteredPosts.length} visible</span>
-                <button
-                  type="button"
-                  onClick={resetAdminFilters}
-                  className="btn-ghost"
-                  style={{ padding: "5px 10px", fontSize: "0.72rem" }}
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
+        <div
+          style={{
+            background: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            borderRadius: "14px",
+            padding: "14px 18px",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "12px",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Assignment queue</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "2px" }}>
+              {filterSummaryText}
+            </p>
           </div>
-
-          <div
+          <span
             style={{
-              background: "var(--bg-card)",
+              background: "var(--bg-elevated)",
               border: "1px solid var(--border)",
-              borderRadius: "14px",
-              overflow: "hidden",
+              borderRadius: "999px",
+              padding: "5px 12px",
+              color: "var(--text-muted)",
+              fontSize: "0.76rem",
+              fontWeight: 800,
             }}
           >
-            <button
-              type="button"
-              onClick={() => setIsTeamPanelOpen((value) => !value)}
+            {filteredPosts.length} shown - {sortLabels[sortMode]}
+          </span>
+        </div>
+
+        <div
+          style={{
+            minHeight: "540px",
+            borderRadius: "14px",
+            border: "1px solid var(--border)",
+            background: "var(--bg-elevated)",
+            padding: filteredPosts.length === 0 ? 0 : "14px",
+          }}
+        >
+          {filteredPosts.length === 0 ? (
+            <div
               style={{
-                width: "100%",
-                padding: "14px 18px",
-                background: "transparent",
-                border: "none",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                color: "var(--text-primary)",
-                textAlign: "left",
+                minHeight: "540px",
+                display: "grid",
+                placeItems: "center",
+                padding: "40px",
+                textAlign: "center",
               }}
             >
-              <span>
-                <span style={{ display: "block", fontWeight: 800, fontSize: "1rem" }}>
-                  Team settings
-                </span>
-                <span style={{ color: "var(--text-muted)", fontSize: "0.74rem" }}>
-                  Edit names only when needed
-                </span>
-              </span>
-              <span style={{ color: "var(--accent)", fontWeight: 900 }}>
-                {isTeamPanelOpen ? "−" : "+"}
-              </span>
-            </button>
-
-            {isTeamPanelOpen && (
               <div
                 style={{
-                  borderTop: "1px solid var(--border)",
-                  padding: "12px 18px 18px",
                   display: "flex",
                   flexDirection: "column",
-                  gap: "8px",
+                  alignItems: "center",
+                  gap: "12px",
                 }}
               >
-                {team.map((member, index) => (
-                  <label key={member.id} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <Avatar member={member} size={34} fontSize="0.7rem" index={index} />
-                    <input
-                      value={member.name}
-                      onChange={(e) => handleTeamNameChange(member.id, e.target.value)}
-                      className="input"
-                      style={{ height: "36px", fontSize: "0.82rem" }}
-                    />
-                  </label>
-                ))}
-                <button
-                  type="button"
-                  onClick={exportJson}
-                  className="btn-ghost"
-                  style={{ marginTop: "6px", padding: "7px 12px", fontSize: "0.75rem" }}
-                >
-                  Export JSON
-                </button>
-              </div>
-            )}
-          </div>
-        </aside>
-
-        {/* Queue */}
-        <section style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
-          <div
-            style={{
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              borderRadius: "14px",
-              padding: "14px 18px",
-              display: "flex",
-              flexWrap: "wrap",
-              gap: "12px",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
-            <div>
-              <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Assignment queue</h2>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "2px" }}>
-                {filterSummaryText}
-              </p>
-            </div>
-            <span
-              style={{
-                background: "var(--bg-elevated)",
-                border: "1px solid var(--border)",
-                borderRadius: "999px",
-                padding: "5px 12px",
-                color: "var(--text-muted)",
-                fontSize: "0.76rem",
-                fontWeight: 800,
-              }}
-            >
-              {filteredPosts.length} shown - {sortLabels[sortMode]}
-            </span>
-          </div>
-
-          <div
-            style={{
-              minHeight: "540px",
-              borderRadius: "14px",
-              border: "1px solid var(--border)",
-              background: "var(--bg-elevated)",
-              padding: filteredPosts.length === 0 ? 0 : "14px",
-            }}
-          >
-            {filteredPosts.length === 0 ? (
-              <div
-                style={{
-                  minHeight: "540px",
-                  display: "grid",
-                  placeItems: "center",
-                  padding: "40px",
-                  textAlign: "center",
-                }}
-              >
-                <div
+                <span style={{ fontSize: "2rem", color: "var(--text-muted)", fontWeight: 900 }}>[]</span>
+                <h3 style={{ fontSize: "1.08rem", fontWeight: 900 }}>
+                  {emptyState.title}
+                </h3>
+                <p
                   style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: "12px",
+                    color: "var(--text-muted)",
+                    maxWidth: "360px",
+                    lineHeight: 1.6,
+                    fontSize: "0.88rem",
                   }}
                 >
-                  <span style={{ fontSize: "2rem", color: "var(--text-muted)", fontWeight: 900 }}>[]</span>
-                  <h3 style={{ fontSize: "1.08rem", fontWeight: 900 }}>
-                    {emptyState.title}
-                  </h3>
-                  <p
-                    style={{
-                      color: "var(--text-muted)",
-                      maxWidth: "360px",
-                      lineHeight: 1.6,
-                      fontSize: "0.88rem",
-                    }}
-                  >
-                    {emptyState.body}
-                  </p>
-                </div>
+                  {emptyState.body}
+                </p>
               </div>
-            ) : (
-              <div
-                style={{
-                  display: "grid",
-                  gap: "14px",
-                }}
-              >
-                {filteredPosts.map((post) => {
-                  const draft = commentDrafts[post.id] ?? {
-                    body: "",
-                    assigneeId: team[0]?.id ?? "",
-                    isAiDraft: false,
-                  };
-                  return (
-                    <PostCard key={post.id} post={post} team={team} currentUser={currentUser!} onDeleteTask={deleteTask} onDeletePost={deletePost}
-                      commentDraft={draft}
-                      commentDrafts={commentDrafts}
-                      openReplyComposerIds={openReplyComposerIds}
-                      onCommentDraftChange={(key, value) =>
-                        setCommentDrafts((cur) => ({ ...cur, [key]: value }))
-                      }
-                      onCreateComment={handleCreateComment}
-                      onUpdatePost={updatePost}
-                      onUpdateComment={updateComment}
-                      onToggleReply={(commentId) =>
-                        setOpenReplyComposerIds((cur) => ({
-                          ...cur,
-                          [commentId]: !cur[commentId],
-                        }))
-                      }
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </section>
+            </div>
+          ) : (
+            <div
+              className="task-cards-grid"
+              style={{
+                display: "grid",
+                gap: "14px",
+              }}
+            >
+              {filteredPosts.map((post) => {
+                const draft = commentDrafts[getCommentDraftKey(currentUser!.id, post.id)] ?? {
+                  body: "",
+                  assigneeId: "",
+                  isAiDraft: false,
+                };
+                return (
+                  <PostCard key={post.id} post={post} team={team} currentUser={currentUser!} onDeleteTask={deleteTask} onDeletePost={deletePost}
+                    commentDraft={draft}
+                    commentDrafts={commentDrafts}
+                    openReplyComposerIds={openReplyComposerIds}
+                    onCommentDraftChange={(key, value) =>
+                      setCommentDrafts((cur) => ({ ...cur, [key]: value }))
+                    }
+                    onCreateComment={handleCreateComment}
+                    onUpdatePost={updatePost}
+                    onUpdateComment={updateComment}
+                    onToggleReply={(commentId) =>
+                      setOpenReplyComposerIds((cur) => ({
+                        ...cur,
+                        [commentId]: !cur[commentId],
+                      }))
+                    }
+                  />
+                );
+              })}
+            </div>
+          )}
+        </div>
       </section>
 
       <style>{`
+        .task-card-clickable {
+          cursor: pointer;
+          transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+        }
+
+        .task-card-clickable:hover {
+          transform: translateY(-2px);
+          border-color: var(--accent) !important;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        }
+
+        .task-cards-grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+
+        @media (max-width: 1200px) {
+          .task-cards-grid {
+            grid-template-columns: repeat(2, 1fr) !important;
+          }
+        }
+
+        @media (max-width: 760px) {
+          .task-cards-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+
         .metric-card {
           text-align: left;
           transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
