@@ -1759,29 +1759,95 @@ export function TeamTimelineSection({
                 key={`${task.kind}:${task.id}`}
                 className={`${getStatusGlowClass(task.status)} task-kind-${task.kind} member-task-card ${isClosed ? "is-done" : ""}`}
               >
-                <div className="member-task-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                  <TeamMemberChip compact memberId={task.assigneeId} team={team} />
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-                    <span style={{ fontWeight: 800, fontSize: "0.82rem", color: "var(--accent)" }}>
-                      {getSubredditName(task.subredditUrl)}
+                {/* ── Hero avatar header ── */}
+                <div style={{
+                  display: "flex",
+                  gap: "16px",
+                  alignItems: "flex-start",
+                  marginBottom: "14px",
+                  paddingBottom: "14px",
+                  borderBottom: "1px solid var(--border)",
+                }}>
+                  {/* Large avatar with status ring */}
+                  <div style={{ position: "relative", flexShrink: 0 }}>
+                    <div style={{
+                      width: 96,
+                      height: 96,
+                      borderRadius: "50%",
+                      padding: "3px",
+                      background: isClosedStatus(task.status)
+                        ? "linear-gradient(135deg, #4ade80, #22c55e)"
+                        : task.status === "working"
+                          ? "linear-gradient(135deg, #fbbf24, #f59e0b)"
+                          : "linear-gradient(135deg, #ff7043, #ff4500)",
+                      boxShadow: isClosedStatus(task.status)
+                        ? "0 0 16px rgba(74,222,128,0.35)"
+                        : task.status === "working"
+                          ? "0 0 16px rgba(251,191,36,0.35)"
+                          : "0 0 16px rgba(255,69,0,0.35)",
+                    }}>
+                      <div style={{ width: "100%", height: "100%", borderRadius: "50%", overflow: "hidden", background: "var(--bg-base)" }}>
+                        {(() => {
+                          const memberIndex = team.findIndex((m) => m.id === task.assigneeId);
+                          const member = team.find((m) => m.id === task.assigneeId) || team[0];
+                          return member ? <Avatar member={member} size={90} fontSize="2rem" index={memberIndex >= 0 ? memberIndex : 0} /> : null;
+                        })()}
+                      </div>
+                    </div>
+                    {/* Kind badge */}
+                    <span style={{
+                      position: "absolute",
+                      bottom: 2,
+                      right: 2,
+                      background: isPostTask ? "var(--accent)" : "#6c63ff",
+                      color: "#fff",
+                      fontSize: "0.6rem",
+                      fontWeight: 900,
+                      borderRadius: "999px",
+                      padding: "2px 6px",
+                      border: "2px solid var(--bg-card)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                    }}>
+                      {isPostTask ? "Post" : "Reply"}
                     </span>
-                    <StatusPill status={task.status} />
+                  </div>
+
+                  {/* Name + meta */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {(() => {
+                      const memberIndex = team.findIndex((m) => m.id === task.assigneeId);
+                      const member = team.find((m) => m.id === task.assigneeId) || team[0];
+                      return (
+                        <p style={{ fontSize: "1.05rem", fontWeight: 900, color: "var(--text-primary)", lineHeight: 1.2 }}>
+                          {member?.name ?? "—"}
+                          {memberIndex === 0 && <span style={{ marginLeft: "6px", fontSize: "0.7rem", color: "var(--accent)", fontWeight: 700 }}>★</span>}
+                        </p>
+                      );
+                    })()}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "7px", alignItems: "center" }}>
+                      <span style={{
+                        fontSize: "0.72rem", fontWeight: 800, color: "var(--accent)",
+                        background: "var(--accent-dim)", borderRadius: "6px", padding: "2px 7px",
+                      }}>
+                        {getSubredditName(task.subredditUrl)}
+                      </span>
+                      <StatusPill status={task.status} />
+                    </div>
                     {currentUser.isAdmin && (
                       <button
                         type="button"
                         onClick={() => { if (confirm("Delete this task?")) onDeleteTask(task); }}
                         className="btn-ghost"
-                        style={{ height: "24px", padding: "0 8px", fontSize: "0.7rem", color: "#f87171" }}
+                        style={{ marginTop: "6px", height: "22px", padding: "0 8px", fontSize: "0.68rem", color: "#f87171" }}
                       >
-                        🗑
+                        🗑 Delete
                       </button>
                     )}
                   </div>
                 </div>
 
-
-
-                <h3 style={{ marginTop: "9px", fontSize: "0.98rem", fontWeight: 850, lineHeight: 1.35 }}>
+                <h3 style={{ fontSize: "0.96rem", fontWeight: 850, lineHeight: 1.4, color: "var(--text-primary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                   {task.title}
                 </h3>
 
@@ -1914,17 +1980,81 @@ export function TaskSection({
                 key={task.id}
                 className={`task-kind-${task.kind} member-task-card ${isDone ? "is-done" : ""}`}
               >
-                {/* ── Header: avatar left, subreddit+status right ── */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
-                  <TeamMemberChip compact memberId={task.assigneeId} team={team} />
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                    <span style={{
-                      fontSize: "0.72rem", fontWeight: 800, color: "var(--accent)",
-                      background: "var(--accent-dim)", borderRadius: "6px", padding: "2px 7px",
+                {/* ── Hero avatar header ── */}
+                <div style={{
+                  display: "flex",
+                  gap: "16px",
+                  alignItems: "flex-start",
+                  marginBottom: "14px",
+                  paddingBottom: "14px",
+                  borderBottom: "1px solid var(--border)",
+                }}>
+                  {/* Large avatar with status ring */}
+                  <div style={{ position: "relative", flexShrink: 0 }}>
+                    <div style={{
+                      width: 96,
+                      height: 96,
+                      borderRadius: "50%",
+                      padding: "3px",
+                      background: isDone
+                        ? "linear-gradient(135deg, #4ade80, #22c55e)"
+                        : task.status === "working"
+                          ? "linear-gradient(135deg, #fbbf24, #f59e0b)"
+                          : "linear-gradient(135deg, #ff7043, #ff4500)",
+                      boxShadow: isDone
+                        ? "0 0 16px rgba(74,222,128,0.35)"
+                        : task.status === "working"
+                          ? "0 0 16px rgba(251,191,36,0.35)"
+                          : "0 0 16px rgba(255,69,0,0.35)",
                     }}>
-                      {getSubredditName(task.subredditUrl)}
+                      <div style={{ width: "100%", height: "100%", borderRadius: "50%", overflow: "hidden", background: "var(--bg-base)" }}>
+                        {(() => {
+                          const memberIndex = team.findIndex((m) => m.id === task.assigneeId);
+                          const member = team.find((m) => m.id === task.assigneeId) || team[0];
+                          return member ? <Avatar member={member} size={90} fontSize="2rem" index={memberIndex >= 0 ? memberIndex : 0} /> : null;
+                        })()}
+                      </div>
+                    </div>
+                    {/* Kind badge */}
+                    <span style={{
+                      position: "absolute",
+                      bottom: 2,
+                      right: 2,
+                      background: isPostTask ? "var(--accent)" : "#6c63ff",
+                      color: "#fff",
+                      fontSize: "0.6rem",
+                      fontWeight: 900,
+                      borderRadius: "999px",
+                      padding: "2px 6px",
+                      border: "2px solid var(--bg-card)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                    }}>
+                      {isPostTask ? "Post" : "Reply"}
                     </span>
-                    <StatusPill status={task.status} />
+                  </div>
+
+                  {/* Name + meta */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {(() => {
+                      const memberIndex = team.findIndex((m) => m.id === task.assigneeId);
+                      const member = team.find((m) => m.id === task.assigneeId) || team[0];
+                      return (
+                        <p style={{ fontSize: "1.05rem", fontWeight: 900, color: "var(--text-primary)", lineHeight: 1.2 }}>
+                          {member?.name ?? "—"}
+                          {memberIndex === 0 && <span style={{ marginLeft: "6px", fontSize: "0.7rem", color: "var(--accent)", fontWeight: 700 }}>★</span>}
+                        </p>
+                      );
+                    })()}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "7px", alignItems: "center" }}>
+                      <span style={{
+                        fontSize: "0.72rem", fontWeight: 800, color: "var(--accent)",
+                        background: "var(--accent-dim)", borderRadius: "6px", padding: "2px 7px",
+                      }}>
+                        {getSubredditName(task.subredditUrl)}
+                      </span>
+                      <StatusPill status={task.status} />
+                    </div>
                   </div>
                 </div>
 
