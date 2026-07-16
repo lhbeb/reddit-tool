@@ -245,7 +245,7 @@ a { color: inherit; }
 .spin { animation: spin 0.9s linear infinite; }
 
 /* ─── Status glow borders on kanban cards ────────────────────── */
-.status-glow-queued  { border-left: 3px solid var(--accent); }
+.status-glow-queued  { border-left: 3px solid var(--yellow); }
 .status-glow-working { border-left: 3px solid var(--yellow); }
 .status-glow-done    { border-left: 3px solid var(--green);  }
 .status-glow-closed  { border-left: 3px solid var(--text-muted); }

@@ -276,7 +276,7 @@ export function TeamMemberPicker({
 }
 
 const statusPickerColors: Record<Status, string> = {
-  queued: "#ff7043",
+  queued: "#fbbf24",
   working: "#fbbf24",
   done: "#4ade80",
   rejected: "#f87171",
@@ -1300,7 +1300,7 @@ export function TeamMemberChip({
 }
 export function StatusPill({ status }: { status: Status }) {
   const config: Record<Status, { label: string; bg: string; color: string }> = {
-    queued: { label: "mazal", bg: "rgba(255,69,0,0.10)", color: "#ff7043" },
+    queued: { label: "mazal", bg: "rgba(234,179,8,0.12)", color: "#fbbf24" },
     working: { label: "khddam 3liha", bg: "rgba(234,179,8,0.12)", color: "#fbbf24" },
     done: { label: "salat", bg: "rgba(34,197,94,0.12)", color: "#4ade80" },
     rejected: { label: "trfd", bg: "rgba(248,113,113,0.12)", color: "#f87171" },
