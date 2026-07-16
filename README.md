@@ -14,11 +14,10 @@ The current MVP stores data in the browser with `localStorage`, so you can use i
 
 ## Local Login
 
-Choose a team member from the login dropdown and use this shared local password:
+Choose a team member from the login dropdown and use the password for that profile:
 
-```bash
-Localserver!!2
-```
+- Mehdi Admin: `Mehbde!!2`
+- Every other team member: `Localserver!!2`
 
 This is intentionally simple for local testing. Use Supabase Auth or another real auth provider before relying on it for a public production app.
 

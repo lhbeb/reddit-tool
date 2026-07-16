@@ -18,6 +18,7 @@ import {
   TeamTimelineSection,
   TopNav,
   Avatar,
+  TeamMemberPicker,
 } from "@/components/reddit/task-components";
 import {
   formatSupabaseError,
@@ -56,9 +57,11 @@ import type {
 } from "@/lib/types";
 
 /* ─── Constants ──────────────────────────────────────────────── */
+// Keep all user-facing strings in Moroccan Darija, written in Latin transliteration.
 const SESSION_KEY = "reddit-assignment-session-v2"; // v2 = slug-based
 const ADMIN_FILTER_PREFS_KEY = "reddit-assignment-admin-filters-v1";
-const LOCAL_PASSWORD = "Localserver!!2";
+const ADMIN_PASSWORD = "Mehbde!!2";
+const MEMBER_PASSWORD = "Localserver!!2";
 /* ═══════════════════════════════════════════════════════════════
    Main Page
 ═══════════════════════════════════════════════════════════════ */
@@ -76,6 +79,8 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<TeamMember | null>(null);
   const [loginDraft, setLoginDraft] = useState({ slug: "mehdi", password: "" });
   const [loginError, setLoginError] = useState("");
+  const [isLoginMemberDropdownOpen, setIsLoginMemberDropdownOpen] = useState(false);
+  const loginMemberDropdownRef = useRef<HTMLDivElement>(null);
   const [activeAssignee, setActiveAssignee] = useState("all");
   const [activeStatus, setActiveStatus] = useState<StatusFilter>("active");
   const [activeScope, setActiveScope] = useState<ScopeFilter>("all");
@@ -99,7 +104,6 @@ export default function Home() {
   const [postSearchQuery, setPostSearchQuery] = useState("");
   const postDropdownRef = useRef<HTMLDivElement>(null);
 
-  const [isAssignDropdownOpen, setIsAssignDropdownOpen] = useState(false);
   const [commentDrafts, setCommentDrafts] = useState<Record<string, CommentDraft>>({});
   const [postProofDrafts, setPostProofDrafts] = useState<Record<string, string>>({});
   const [showDoneTasks, setShowDoneTasks] = useState(false);
@@ -107,6 +111,50 @@ export default function Home() {
   const [openReplyComposerIds, setOpenReplyComposerIds] = useState<Record<string, boolean>>({});
   const [memberTab, setMemberTab] = useState<"my-tasks" | "team-tasks">("my-tasks");
   const [teamFilterAssignee, setTeamFilterAssignee] = useState<string>("all");
+  const [isTeamFilterDropdownOpen, setIsTeamFilterDropdownOpen] = useState(false);
+  const teamFilterDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isTeamFilterDropdownOpen) return;
+
+    function closeMenu(event: PointerEvent) {
+      if (!teamFilterDropdownRef.current?.contains(event.target as Node)) {
+        setIsTeamFilterDropdownOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setIsTeamFilterDropdownOpen(false);
+    }
+
+    document.addEventListener("pointerdown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isTeamFilterDropdownOpen]);
+
+  useEffect(() => {
+    if (!isLoginMemberDropdownOpen) return;
+
+    function closeMenu(event: PointerEvent) {
+      if (!loginMemberDropdownRef.current?.contains(event.target as Node)) {
+        setIsLoginMemberDropdownOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setIsLoginMemberDropdownOpen(false);
+    }
+
+    document.addEventListener("pointerdown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isLoginMemberDropdownOpen]);
 
   /* ── Load team from DB ─────────────────────────────────────── */
   const loadTeam = useCallback(async () => {
@@ -401,13 +449,28 @@ export default function Home() {
         }),
     [allTeamTasks, teamFilterAssignee],
   );
+  const teamOpenTaskCounts = useMemo(() => {
+    const counts = new Map(team.map((member) => [member.id, 0]));
+
+    allTeamTasks.forEach((task) => {
+      if (isOpenStatus(task.status)) {
+        counts.set(task.assigneeId, (counts.get(task.assigneeId) ?? 0) + 1);
+      }
+    });
+
+    return counts;
+  }, [allTeamTasks, team]);
+  const allTeamOpenTaskCount = useMemo(
+    () => allTeamTasks.filter((task) => isOpenStatus(task.status)).length,
+    [allTeamTasks],
+  );
 
   const activityLog = useMemo<ActivityLogItem[]>(() => {
     const closedActionLabels: Partial<Record<Status, string>> = {
-      done: "completed",
-      rejected: "reported rejected",
-      removed: "reported removed",
-      cancelled: "cancelled",
+      done: "kmml",
+      rejected: "rfd",
+      removed: "t7yd",
+      cancelled: "lgha",
     };
     const toneByStatus: Partial<Record<Status, ActivityLogItem["tone"]>> = {
       done: "green",
@@ -430,7 +493,7 @@ export default function Home() {
         id: `post-assigned-${post.id}`,
         actorId: post.assigneeId,
         actorName: postAssignee,
-        action: post.status === "working" ? "started a post task" : "was assigned a post task",
+        action: post.status === "working" ? "bda mahma dyal lpost" : "t3ayyen lih mahma dyal lpost",
         createdAt: postTime,
         detail: post.title,
         kind: "post",
@@ -458,7 +521,7 @@ export default function Home() {
           id: `post-status-${post.id}-${post.status}`,
           actorId,
           actorName: getActor(actorId),
-          action: `${closedActionLabels[post.status] ?? "updated"} a post task`,
+          action: `${closedActionLabels[post.status] ?? "bddl"} mahma dyal lpost`,
           createdAt: post.deletedAt ?? postTime,
           detail: post.title,
           kind: "post",
@@ -470,15 +533,13 @@ export default function Home() {
       post.comments.forEach((comment) => {
         const commentAssignee = getActor(comment.assigneeId);
         const commentTime = comment.assignedAt ?? comment.createdAt;
-        const commentDetail = comment.body.length > 96
-          ? `${comment.body.slice(0, 96)}...`
-          : comment.body;
+        const commentDetail = post.title;
 
         items.push({
           id: `comment-assigned-${comment.id}`,
           actorId: comment.assigneeId,
           actorName: commentAssignee,
-          action: comment.parentId ? "was assigned a reply task" : "was assigned a comment task",
+          action: comment.parentId ? "t3ayyen lih mahma dyal rradd" : "t3ayyen lih mahma dyal tta3li9",
           createdAt: commentTime,
           detail: commentDetail,
           kind: "comment",
@@ -491,7 +552,7 @@ export default function Home() {
             id: `comment-status-${comment.id}-${comment.status}`,
             actorId: comment.assigneeId,
             actorName: commentAssignee,
-            action: `${closedActionLabels[comment.status] ?? "updated"} a comment task`,
+            action: `${closedActionLabels[comment.status] ?? "bddl"} mahma dyal tta3li9`,
             createdAt: commentTime,
             detail: commentDetail,
             kind: "comment",
@@ -567,48 +628,48 @@ export default function Home() {
   const filterSummaryText = useMemo(() => {
     const parts = [sortLabels[sortMode]];
     if (activeStatus !== "active") {
-      parts.push(activeStatus === "all" ? "all statuses" : statusLabels[activeStatus].toLowerCase());
+      parts.push(activeStatus === "all" ? "ga3 l7alat" : statusLabels[activeStatus].toLowerCase());
     }
-    if (activeScope === "with-comments") parts.push("with comments");
+    if (activeScope === "with-comments") parts.push("m3a tta3ali9");
     if (activeAssignee !== "all") parts.push(getMemberName(team, activeAssignee));
-    if (searchQuery.trim()) parts.push(`matching "${searchQuery.trim()}"`);
+    if (searchQuery.trim()) parts.push(`kaytsift 3la "${searchQuery.trim()}"`);
     return parts.join(" - ");
   }, [activeAssignee, activeScope, activeStatus, searchQuery, sortMode, team]);
 
   const emptyState = useMemo(() => {
     if (posts.length === 0) {
       return {
-        title: "No assignments yet",
-        body: "Create the first Reddit post from the New post button.",
+        title: "Mazal ma kayn ta3yin",
+        body: "Sawb awel lpost dyal Reddit b zrr dyal + post jdid.",
       };
     }
 
     if (searchQuery.trim()) {
       return {
-        title: "Nothing matches that search",
-        body: `No title, comment, subreddit, or person matches "${searchQuery.trim()}". Clear search to see the queue again.`,
+        title: "Ma l9ina walo b had t9lib",
+        body: `Ma kayn la 3onwan, la ta3li9, la subreddit, la chi wa7ed kaytsift m3a "${searchQuery.trim()}". Mse7 t9lib bach tchof l9aima kamla.`,
       };
     }
 
     if (activeScope === "with-comments") {
       return {
-        title: "No posts with comments here",
-        body: "Switch Show back to All posts or add a comment assignment to a post.",
+        title: "Ma kaynch lposts fihom ta3ali9 hna",
+        body: "Rje3 lga3 lposts wla zid ta3yin dyal ta3li9 lchi lpost.",
       };
     }
 
     if (activeAssignee !== "all") {
       return {
-        title: `No tasks for ${getMemberName(team, activeAssignee)}`,
-        body: "Pick All people or choose another teammate.",
+        title: `Ma kaynach lmaham dyal ${getMemberName(team, activeAssignee)}`,
+        body: "Khtar ga3 team wla chi wa7ed akhor.",
       };
     }
 
     return {
-      title: "No matching assignments",
+      title: "Ma kayn ta3yin kaytsift",
       body: activeStatus === "active"
-        ? "Everything visible is done or closed. Switch status to All statuses or create a new post."
-        : "Try another status filter or reset the filters.",
+        ? "Ga3 dakchi li kayban salat wla msdoud. Bddl l7ala lga3 l7alat wla sawb post jdida."
+        : "Jarrab filter akhor wla rje3 lfilters l7alhom.",
     };
   }, [activeAssignee, activeScope, activeStatus, posts.length, searchQuery, team]);
   /* ── Handlers ─────────────────────────────────────────────── */
@@ -636,12 +697,13 @@ export default function Home() {
   }
   function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (loginDraft.password !== LOCAL_PASSWORD) {
-      setLoginError("Wrong password. Try again.");
+    const found = team.find((m) => m.slug === loginDraft.slug);
+    if (!found) { setLoginError("Ma l9inach had l3odw."); return; }
+    const expectedPassword = found.isAdmin ? ADMIN_PASSWORD : MEMBER_PASSWORD;
+    if (loginDraft.password !== expectedPassword) {
+      setLoginError("Lmot de passe ghalet. 3awed.");
       return;
     }
-    const found = team.find((m) => m.slug === loginDraft.slug);
-    if (!found) { setLoginError("Member not found."); return; }
     setCurrentUser(found);
     // Admins see ALL posts; members see only their own
     setActiveAssignee(found.isAdmin ? "all" : found.id);
@@ -665,7 +727,7 @@ export default function Home() {
 
     // Always resolve to a real UUID — never pass an empty string to a UUID FK column
     const assigneeId = postDraft.assigneeId || team[0]?.id;
-    if (!assigneeId) { setPostError("Team not loaded yet — try again."); return; }
+    if (!assigneeId) { setPostError("Team mazal ma t7mlatch. 3awed."); return; }
 
     setIsSubmittingPost(true);
     try {
@@ -715,7 +777,7 @@ export default function Home() {
       if (error) {
         const message = formatSupabaseError(error);
         console.error("[create-post] Supabase error:", message);
-        setPostError(`Failed to save: ${message}`);
+        setPostError("Ma t7afdtch lpost. 3awed t9ad.");
         return;
       }
 
@@ -739,9 +801,9 @@ export default function Home() {
     event.preventDefault();
     setCommentModalError("");
     const { postId, body, assigneeId, isAiDraft } = commentModalDraft;
-    if (!postId) { setCommentModalError("Please select a post."); return; }
-    if (!body.trim()) { setCommentModalError("Please enter comment text."); return; }
-    if (!assigneeId) { setCommentModalError("Please select an assignee."); return; }
+    if (!postId) { setCommentModalError("Khtar lpost louwel."); return; }
+    if (!body.trim()) { setCommentModalError("Ktob nass dyal tta3li9."); return; }
+    if (!assigneeId) { setCommentModalError("Khtar li ghaykhdem 3la tta3li9."); return; }
 
     setIsSubmittingComment(true);
     try {
@@ -771,7 +833,7 @@ export default function Home() {
       if (error) {
         const message = formatSupabaseError(error);
         console.error("[global-create-comment] Supabase error:", message);
-        setCommentModalError(`Failed to save: ${message}`);
+        setCommentModalError("Ma t7afdtch tta3li9. 3awed t9ad.");
         return;
       }
 
@@ -873,9 +935,10 @@ export default function Home() {
 
     if (error) {
       console.error("[update-post]", formatSupabaseError(error));
-      return;
+      return false;
     }
     await loadPosts();
+    return true;
   }
 
   async function updateComment(
@@ -931,13 +994,7 @@ export default function Home() {
     if (task.kind === "post") {
       await deletePost(task.postId);
     } else if (task.commentId) {
-      const { error } = await supabase.from("reddit_comments").delete().eq("id", task.commentId);
-      if (error) {
-        showToast("Error deleting task: " + error.message);
-      } else {
-        showToast("Task deleted");
-        await loadPosts();
-      }
+      await deleteComment(task.commentId);
     }
   }
 
@@ -953,7 +1010,7 @@ export default function Home() {
     const clean = publishedUrl.trim();
     if (!isUsableRedditLink(clean) || task.kind !== "post") return;
     await updatePost(task.postId, { publishedUrl: clean, status: "done" });
-    showToast("Post task marked as done!");
+    showToast("Salat mahma dyal lpost!");
     setPostProofDrafts((cur) => ({ ...cur, [task.postId]: clean }));
   }
 
@@ -965,13 +1022,28 @@ export default function Home() {
   }
 
   async function deletePost(postId: string) {
-    await updatePost(postId, {
+    const deleted = await updatePost(postId, {
       status: "cancelled",
       softDeleted: true,
       deletedAt: new Date().toISOString(),
       deletedBy: currentUser?.id ?? null,
-      rejectionReason: "Cancelled by admin",
+      rejectionReason: "Lghaha ladmin",
     });
+    showToast(deleted ? "Tlgat lmahma" : "Ma tlgatch lmahma. 3awed.");
+  }
+
+  async function deleteComment(commentId: string) {
+    if (!currentUser?.isAdmin) return;
+
+    const { error } = await supabase.from("reddit_comments").delete().eq("id", commentId);
+    if (error) {
+      console.error("[delete-comment]", formatSupabaseError(error));
+      showToast("Ma tms7atch tta3li9. 3awed.");
+      return;
+    }
+
+    showToast("Tms7at tta3li9");
+    await loadPosts();
   }
 
 
@@ -997,7 +1069,7 @@ export default function Home() {
               textTransform: "uppercase",
             }}
           >
-            Loading assignment desk
+            Kayt7mel tool dyal orchestration
           </p>
         </div>
       </main>
@@ -1005,6 +1077,8 @@ export default function Home() {
   }
 
   /* ── Login ─────────────────────────────────────────────────── */
+  const selectedLoginMember = team.find((member) => member.slug === loginDraft.slug) ?? team[0];
+
   if (!currentUser) {
     return (
       <main className="grid min-h-screen place-items-center mesh-bg px-5 py-10">
@@ -1020,7 +1094,7 @@ export default function Home() {
             >
               <Image
                 src="/reddit-1.svg"
-                alt="Reddit logo"
+                alt="Logo dyal Reddit"
                 width={120}
                 height={40}
                 priority
@@ -1040,10 +1114,10 @@ export default function Home() {
                   lineHeight: 1.2,
                 }}
               >
-                Assignment Desk
+                Tool dyal orchestration
               </h1>
               <p style={{ marginTop: "4px", fontSize: "0.82rem", color: "var(--text-muted)" }}>
-                Sign in to access your tasks
+                Dkhol bach tchof l&apos;maham dyawlk
               </p>
             </div>
           </div>
@@ -1053,31 +1127,126 @@ export default function Home() {
               onSubmit={handleLogin}
               style={{ display: "flex", flexDirection: "column", gap: "18px" }}
             >
-              <Field label="Who are you?">
-                <select
-                  value={loginDraft.slug}
-                  onChange={(e) =>
-                    setLoginDraft((cur) => ({ ...cur, slug: e.target.value }))
-                  }
-                  className="input"
-                  style={{ height: "44px" }}
-                >
-                  {team.map((m) => (
-                    <option key={m.id} value={m.slug}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
+              <Field label="Profil dyalk">
+                <div ref={loginMemberDropdownRef} style={{ position: "relative" }}>
+                  <button
+                    type="button"
+                    data-testid="login-member-picker-trigger"
+                    aria-expanded={isLoginMemberDropdownOpen}
+                    aria-haspopup="listbox"
+                    onClick={() => setIsLoginMemberDropdownOpen((isOpen) => !isOpen)}
+                    style={{
+                      width: "100%",
+                      minHeight: "54px",
+                      padding: "8px 10px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "10px",
+                      color: "var(--text-primary)",
+                      textAlign: "left",
+                      background: isLoginMemberDropdownOpen ? "var(--bg-card-hover)" : "var(--bg-elevated)",
+                      border: `1px solid ${isLoginMemberDropdownOpen ? "var(--accent)" : "var(--border-bright)"}`,
+                      borderRadius: "8px",
+                      boxShadow: isLoginMemberDropdownOpen ? "0 0 0 3px var(--accent-dim)" : "none",
+                    }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                      {selectedLoginMember && (
+                        <Avatar
+                          member={selectedLoginMember}
+                          size={36}
+                          index={team.findIndex((member) => member.id === selectedLoginMember.id)}
+                        />
+                      )}
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: "0.86rem", fontWeight: 850, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {selectedLoginMember?.name ?? "Khtar chi wa7ed mn team"}
+                        </span>
+                        <span style={{ display: "block", marginTop: "2px", color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 700 }}>
+                  {selectedLoginMember?.isAdmin ? "L'admin" : "3odw f team"}
+                        </span>
+                      </span>
+                    </span>
+                    <span aria-hidden="true" style={{ color: isLoginMemberDropdownOpen ? "var(--accent)" : "var(--text-muted)", fontSize: "0.9rem", fontWeight: 900, flexShrink: 0 }}>
+                      {isLoginMemberDropdownOpen ? "^" : "v"}
+                    </span>
+                  </button>
+
+                  {isLoginMemberDropdownOpen && (
+                    <div
+                      role="listbox"
+                      aria-label="Khtar lprofil dyalk"
+                      data-testid="login-member-picker-options"
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 8px)",
+                        left: 0,
+                        right: 0,
+                        zIndex: 10,
+                        maxHeight: "332px",
+                        overflowY: "auto",
+                        padding: "6px",
+                        background: "var(--bg-card)",
+                        border: "1px solid var(--border-bright)",
+                        borderRadius: "10px",
+                        boxShadow: "0 16px 32px rgba(0,0,0,0.45)",
+                      }}
+                    >
+                      {team.map((member, index) => {
+                        const isSelected = loginDraft.slug === member.slug;
+
+                        return (
+                          <button
+                            key={member.id}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            onClick={() => {
+                              setLoginDraft((current) => ({ ...current, slug: member.slug }));
+                              setLoginError("");
+                              setIsLoginMemberDropdownOpen(false);
+                            }}
+                            style={{
+                              width: "100%",
+                              minHeight: "50px",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px",
+                              padding: "8px",
+                              color: "var(--text-primary)",
+                              textAlign: "left",
+                              background: isSelected ? "var(--accent-dim)" : "transparent",
+                              border: "none",
+                              borderRadius: "7px",
+                            }}
+                          >
+                            <Avatar member={member} size={34} index={index} />
+                            <span style={{ flex: 1, minWidth: 0 }}>
+                              <span style={{ display: "block", fontSize: "0.84rem", fontWeight: 850, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {member.name}
+                              </span>
+                              <span style={{ display: "block", marginTop: "1px", color: "var(--text-muted)", fontSize: "0.7rem", fontWeight: 700 }}>
+                                {member.isAdmin ? "L'admin" : "3odw f team"}
+                              </span>
+                            </span>
+                            {isSelected && <span aria-hidden="true" style={{ color: "var(--accent)", fontWeight: 900 }}>✓</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </Field>
 
-              <Field label="Password">
+              <Field label="Lmot de passe">
                 <input
                   value={loginDraft.password}
                   onChange={(e) =>
                     setLoginDraft((cur) => ({ ...cur, password: e.target.value }))
                   }
                   type="password"
-                  placeholder="Enter team password"
+                  placeholder="Dkhel lmot de passe dyal team"
                   className="input"
                   style={{ height: "44px" }}
                 />
@@ -1103,7 +1272,7 @@ export default function Home() {
                 className="btn-primary"
                 style={{ height: "46px", fontSize: "0.9rem", marginTop: "4px" }}
               >
-                Open dashboard →
+                7ell ldashboard →
               </button>
             </form>
           </div>
@@ -1114,13 +1283,17 @@ export default function Home() {
 
   const isAdmin = currentUser.isAdmin;
   const currentUserIndex = team.findIndex((m) => m.id === currentUser.id);
+  const selectedTeamFilterMember = team.find((member) => member.id === teamFilterAssignee);
+  const selectedTeamFilterOpenTaskCount = selectedTeamFilterMember
+    ? teamOpenTaskCounts.get(selectedTeamFilterMember.id) ?? 0
+    : allTeamOpenTaskCount;
 
   /* ── Member View ─────────────────────────────────────────── */
   if (!isAdmin) {
     const nextTaskText =
       pendingTasks.length === 0
-        ? "No pending work"
-        : `${pendingTasks.length} task${pendingTasks.length === 1 ? "" : "s"} to finish`;
+        ? "Mazal ma kayn walo"
+        : `${pendingTasks.length} lmaham khassk tkmmel`;
 
     return (
       <main style={{ minHeight: "100vh", background: "var(--bg-base)", color: "var(--text-primary)" }}>
@@ -1149,15 +1322,15 @@ export default function Home() {
                   {nextTaskText}
                 </p>
                 <h1 style={{ marginTop: "5px", fontSize: "1.22rem", fontWeight: 900, lineHeight: 1.25 }}>
-                  Your tasks
+                  L&apos;maham dyawlk
                 </h1>
                 <p style={{ marginTop: "5px", color: "var(--text-muted)", fontSize: "0.84rem", lineHeight: 1.55 }}>
-                  Open the first card, do the work on Reddit, then come back and press Mark done.
+                  7ell awel karta, khdem f Reddit, w rje3 hna bach tdir Salat.
                 </p>
               </div>
-              <div className="member-count-strip" aria-label="Task summary">
-                <MetricPill label="To do" value={pendingTasks.length} tone="accent" />
-                <MetricPill label="Done" value={doneTasks.length} tone="green" />
+              <div className="member-count-strip" aria-label="Khla9at lmaham">
+                <MetricPill label="Mazal" value={pendingTasks.length} tone="accent" />
+                <MetricPill label="Salat" value={doneTasks.length} tone="green" />
               </div>
             </div>
           </div>
@@ -1165,18 +1338,21 @@ export default function Home() {
 
         <section style={{ width: "100%", padding: "22px clamp(16px, 2vw, 28px) 34px" }}>
           <div style={{ display: "grid", gap: "18px" }}>
-            <div className="member-tabs" role="tablist" aria-label="Member task views">
+            <div className="member-tabs" role="tablist" aria-label="Lmaham dyal l3odw">
               <button
                 type="button"
                 role="tab"
                 aria-selected={memberTab === "my-tasks"}
                 className={memberTab === "my-tasks" ? "is-active" : ""}
-                onClick={() => setMemberTab("my-tasks")}
+                onClick={() => {
+                  setMemberTab("my-tasks");
+                  setIsTeamFilterDropdownOpen(false);
+                }}
               >
                 <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
-                My Tasks
+                Lmaham Dyawli
                 <span>{pendingTasks.length}</span>
               </button>
               <button
@@ -1189,7 +1365,7 @@ export default function Home() {
                 <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
                 </svg>
-                All Team Tasks
+                L&apos;maham dyal team
                 <span>{filteredTeamTasks.length}</span>
               </button>
             </div>
@@ -1198,7 +1374,7 @@ export default function Home() {
               <>
                 <TaskSection currentUser={currentUser} onDeleteTask={deleteTask}
                   copiedLinkId={copiedLinkId}
-                  emptyText="Nothing to do right now. New tasks from Mehdi Admin will show up here."
+                  emptyText="Daba ma kaynach mahma. Lmaham jdad mn Mehdi Admin ghaybano hna."
                   onCompletePostTask={completePostTask}
                   onCopyLink={copyLinkToClipboard}
                   onPostProofChange={(postId, value) =>
@@ -1208,7 +1384,7 @@ export default function Home() {
                   postProofDrafts={postProofDrafts}
                   tasks={memberPendingTasks}
                   team={team}
-                  title="JUST DO IT NOW"
+                  title="BDI DABA"
                   tone="active"
                 />
 
@@ -1226,16 +1402,16 @@ export default function Home() {
                     className="done-toggle"
                     aria-expanded={showDoneTasks}
                   >
-                    <span style={{ fontWeight: 850 }}>Finished tasks</span>
+                    <span style={{ fontWeight: 850 }}>L&apos;maham li salaw</span>
                     <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 800 }}>
-                      {doneTasks.length} {showDoneTasks ? "shown" : "hidden"} {showDoneTasks ? "▴" : "▾"}
+                      {doneTasks.length} {showDoneTasks ? "baynin" : "mkhbiyyin"} {showDoneTasks ? "▴" : "▾"}
                     </span>
                   </button>
 
                   {showDoneTasks && (
                     <TaskSection currentUser={currentUser} onDeleteTask={deleteTask}
                       copiedLinkId={copiedLinkId}
-                      emptyText="Finished tasks will appear here."
+                      emptyText="L'maham li salaw ghaybano hna."
                       onCompletePostTask={completePostTask}
                       onCopyLink={copyLinkToClipboard}
                       onPostProofChange={(postId, value) =>
@@ -1245,7 +1421,7 @@ export default function Home() {
                       postProofDrafts={postProofDrafts}
                       tasks={recentDoneTasks}
                       team={team}
-                      title="Done"
+                      title="Salat"
                       tone="done"
                     />
                   )}
@@ -1261,24 +1437,175 @@ export default function Home() {
                     padding: "14px 16px",
                   }}
                 >
-                  <Field label="Filter team tasks">
-                    <select
-                      value={teamFilterAssignee}
-                      onChange={(event) => setTeamFilterAssignee(event.target.value)}
-                      className="input"
-                      style={{ height: "40px", maxWidth: "280px" }}
+                  <div ref={teamFilterDropdownRef} style={{ position: "relative", width: "min(100%, 360px)" }}>
+                    <p id="team-task-filter-label" style={{ color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 850, textTransform: "uppercase" }}>
+                      Filtri l&apos;maham dyal team
+                    </p>
+                    <button
+                      type="button"
+                      data-testid="team-task-filter-trigger"
+                      aria-labelledby="team-task-filter-label"
+                      aria-expanded={isTeamFilterDropdownOpen}
+                      aria-haspopup="listbox"
+                      onClick={() => setIsTeamFilterDropdownOpen((isOpen) => !isOpen)}
+                      style={{
+                        width: "100%",
+                        minHeight: "52px",
+                        marginTop: "8px",
+                        padding: "8px 10px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "10px",
+                        textAlign: "left",
+                        color: "var(--text-primary)",
+                        background: isTeamFilterDropdownOpen ? "var(--bg-card-hover)" : "var(--bg-elevated)",
+                        border: `1px solid ${isTeamFilterDropdownOpen ? "var(--accent)" : "var(--border-bright)"}`,
+                        borderRadius: "8px",
+                        boxShadow: isTeamFilterDropdownOpen ? "0 0 0 3px var(--accent-dim)" : "none",
+                      }}
                     >
-                      <option value="all">All people</option>
-                      {team.map((member) => (
-                        <option key={member.id} value={member.id}>
-                          {member.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
+                      <span style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                        {selectedTeamFilterMember ? (
+                          <Avatar
+                            member={selectedTeamFilterMember}
+                            size={32}
+                            index={team.findIndex((member) => member.id === selectedTeamFilterMember.id)}
+                          />
+                        ) : (
+                          <span aria-hidden="true" style={{ display: "flex", alignItems: "center", width: "52px", height: "32px" }}>
+                            {team.slice(0, 3).map((member, index) => (
+                              <span
+                                key={member.id}
+                                style={{ marginLeft: index === 0 ? 0 : "-10px", zIndex: 3 - index, border: "2px solid var(--bg-elevated)", borderRadius: "50%" }}
+                              >
+                                <Avatar member={member} size={28} index={index} />
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: "0.84rem", fontWeight: 850, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {selectedTeamFilterMember?.name ?? "Ga3 team"}
+                          </span>
+                          <span style={{ display: "block", marginTop: "2px", color: "var(--text-muted)", fontSize: "0.72rem", fontWeight: 700 }}>
+                            {selectedTeamFilterOpenTaskCount} lmaham mazal
+                          </span>
+                        </span>
+                      </span>
+                      <span aria-hidden="true" style={{ color: isTeamFilterDropdownOpen ? "var(--accent)" : "var(--text-muted)", fontSize: "0.9rem", fontWeight: 900, flexShrink: 0 }}>
+                        {isTeamFilterDropdownOpen ? "^" : "v"}
+                      </span>
+                    </button>
+
+                    {isTeamFilterDropdownOpen && (
+                      <div
+                        role="listbox"
+                        aria-labelledby="team-task-filter-label"
+                        data-testid="team-task-filter-options"
+                        style={{
+                          position: "absolute",
+                          top: "calc(100% + 8px)",
+                          left: 0,
+                          zIndex: 70,
+                          width: "100%",
+                          maxHeight: "332px",
+                          overflowY: "auto",
+                          padding: "6px",
+                          background: "var(--bg-card)",
+                          border: "1px solid var(--border-bright)",
+                          borderRadius: "10px",
+                          boxShadow: "0 16px 32px rgba(0,0,0,0.45)",
+                        }}
+                      >
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={teamFilterAssignee === "all"}
+                          onClick={() => {
+                            setTeamFilterAssignee("all");
+                            setIsTeamFilterDropdownOpen(false);
+                          }}
+                          style={{
+                            width: "100%",
+                            minHeight: "46px",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "10px",
+                            padding: "7px 8px",
+                            color: "var(--text-primary)",
+                            textAlign: "left",
+                            background: teamFilterAssignee === "all" ? "var(--accent-dim)" : "transparent",
+                            border: "none",
+                            borderRadius: "7px",
+                          }}
+                        >
+                          <span aria-hidden="true" style={{ display: "flex", alignItems: "center", width: "42px", height: "30px" }}>
+                            {team.slice(0, 3).map((member, index) => (
+                              <span
+                                key={member.id}
+                                style={{ marginLeft: index === 0 ? 0 : "-9px", zIndex: 3 - index, border: "2px solid var(--bg-card)", borderRadius: "50%" }}
+                              >
+                                <Avatar member={member} size={26} index={index} />
+                              </span>
+                            ))}
+                          </span>
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ display: "block", fontSize: "0.82rem", fontWeight: 850 }}>Ga3 team</span>
+                            <span style={{ display: "block", marginTop: "1px", color: "var(--text-muted)", fontSize: "0.7rem", fontWeight: 700 }}>
+                              {allTeamOpenTaskCount} lmaham mazal
+                            </span>
+                          </span>
+                          {teamFilterAssignee === "all" && <span aria-hidden="true" style={{ color: "var(--accent)", fontWeight: 900 }}>✓</span>}
+                        </button>
+
+                        {team.map((member, index) => {
+                          const isSelected = teamFilterAssignee === member.id;
+                          const openTaskCount = teamOpenTaskCounts.get(member.id) ?? 0;
+
+                          return (
+                            <button
+                              key={member.id}
+                              type="button"
+                              role="option"
+                              aria-selected={isSelected}
+                              onClick={() => {
+                                setTeamFilterAssignee(member.id);
+                                setIsTeamFilterDropdownOpen(false);
+                              }}
+                              style={{
+                                width: "100%",
+                                minHeight: "46px",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "10px",
+                                padding: "7px 8px",
+                                color: "var(--text-primary)",
+                                textAlign: "left",
+                                background: isSelected ? "var(--accent-dim)" : "transparent",
+                                border: "none",
+                                borderRadius: "7px",
+                              }}
+                            >
+                              <Avatar member={member} size={30} index={index} />
+                              <span style={{ flex: 1, minWidth: 0 }}>
+                                <span style={{ display: "block", fontSize: "0.82rem", fontWeight: 850, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {member.name}
+                                </span>
+                                <span style={{ display: "block", marginTop: "1px", color: "var(--text-muted)", fontSize: "0.7rem", fontWeight: 700 }}>
+                                  {openTaskCount} lmaham mazal
+                                </span>
+                              </span>
+                              {isSelected && <span aria-hidden="true" style={{ color: "var(--accent)", fontWeight: 900 }}>✓</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </section>
                 <TeamTimelineSection
-                  emptyText="No team tasks match this filter."
+                  emptyText="Ma kaynach lmaham dyal team kaytsift m3a had filter."
                   tasks={filteredTeamTasks}
                   team={team}
                   currentUser={currentUser!}
@@ -1568,10 +1895,10 @@ export default function Home() {
             >
               <div>
                 <h2 id="create-post-title" style={{ fontWeight: 900, fontSize: "1.1rem" }}>
-                  Add Reddit post
+                  Zid post dyal Reddit
                 </h2>
                 <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "3px" }}>
-                  Create the post task first, then add comment assignments from the card.
+                  Sawb mahma dyal lpost louwel, mn b3d zid ta3yin dyal tta3ali9 mn lkarta.
                 </p>
               </div>
               <button
@@ -1580,7 +1907,7 @@ export default function Home() {
                 disabled={isSubmittingPost}
                 className="btn-ghost"
                 style={{ width: "34px", height: "34px", padding: 0, borderRadius: "50%" }}
-                aria-label="Close create post"
+                aria-label="Sedd tsayeb lpost"
               >
                 ×
               </button>
@@ -1589,28 +1916,28 @@ export default function Home() {
               onSubmit={handleCreatePost}
               style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}
             >
-              <Field label="Title">
+              <Field label="L3onwan">
                 <input
                   value={postDraft.title}
                   onChange={(e) =>
                     setPostDraft((cur) => ({ ...cur, title: e.target.value }))
                   }
-                  placeholder="Paste the exact Reddit title"
+                  placeholder="Lsa9 l3onwan dyal Reddit kif ma howa"
                   className="input"
                 />
               </Field>
-              <Field label="Post body">
+              <Field label="Nass dyal lpost">
                 <textarea
                   value={postDraft.postBody}
                   onChange={(e) =>
                     setPostDraft((cur) => ({ ...cur, postBody: e.target.value }))
                   }
-                  placeholder="Paste the post body here"
+                  placeholder="Lsa9 nass dyal lpost hna"
                   className="input"
                   style={{ minHeight: "140px", resize: "vertical" }}
                 />
               </Field>
-              <Field label="Attach Media (optional)">
+              <Field label="Zid media (ikhtiyari)">
                 <div style={{
                   position: "relative",
                   display: "flex",
@@ -1645,20 +1972,20 @@ export default function Home() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
                       <span style={{ fontSize: "0.85rem", fontWeight: 800 }}>{mediaFile.name}</span>
-                      <span style={{ fontSize: "0.75rem", opacity: 0.8, marginTop: "4px" }}>Click to change file</span>
+                      <span style={{ fontSize: "0.75rem", opacity: 0.8, marginTop: "4px" }}>Klik bach tbddl lfile</span>
                     </>
                   ) : (
                     <>
                       <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ marginBottom: "8px" }}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                       </svg>
-                      <span style={{ fontSize: "0.85rem", fontWeight: 800 }}>Click or drag file to upload</span>
-                      <span style={{ fontSize: "0.75rem", opacity: 0.7, marginTop: "4px" }}>Supports images and videos</span>
+                      <span style={{ fontSize: "0.85rem", fontWeight: 800 }}>Klik wla jerr lfile bach tla3o</span>
+                      <span style={{ fontSize: "0.75rem", opacity: 0.7, marginTop: "4px" }}>Kay9bel tsawer w videos</span>
                     </>
                   )}
                 </div>
               </Field>
-              <Field label="Subreddit link">
+              <Field label="Link dyal subreddit">
                 <input
                   value={postDraft.subredditUrl}
                   onChange={(e) =>
@@ -1668,107 +1995,18 @@ export default function Home() {
                   className="input"
                 />
               </Field>
-              <Field label="Assign post to">
-                <div style={{ position: "relative" }}>
-                  <button
-                    type="button"
-                    onClick={() => setIsAssignDropdownOpen(!isAssignDropdownOpen)}
-                    className="input"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "10px 14px",
-                      cursor: "pointer",
-                      background: "var(--bg-elevated)",
-                      textAlign: "left",
-                    }}
-                  >
-                    {(() => {
-                      const selectedMember = team.find(m => m.id === (postDraft.assigneeId || team[0]?.id)) || team[0];
-                      if (!selectedMember) return "Select Assignee";
-                      return (
-                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                          <Avatar member={selectedMember} size={24} />
-                          <span style={{ fontWeight: 600, fontSize: "0.85rem", color: "var(--text-primary)" }}>
-                            {selectedMember.name}
-                          </span>
-                        </div>
-                      );
-                    })()}
-                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-
-                  {isAssignDropdownOpen && (
-                    <>
-                      <div 
-                        style={{ position: "fixed", inset: 0, zIndex: 40 }} 
-                        onClick={() => setIsAssignDropdownOpen(false)}
-                      />
-                      <ul
-                        style={{
-                          position: "absolute",
-                          bottom: "calc(100% + 4px)", // popup upwards to avoid cutting off
-                          left: 0,
-                          right: 0,
-                          background: "var(--bg-card)",
-                          border: "1px solid var(--border-bright)",
-                          borderRadius: "10px",
-                          boxShadow: "0 -8px 24px rgba(0,0,0,0.3)",
-                          zIndex: 50,
-                          maxHeight: "220px",
-                          overflowY: "auto",
-                          padding: "6px",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: "2px",
-                          listStyle: "none",
-                          margin: 0
-                        }}
-                      >
-                        {team.map((m, i) => (
-                          <li key={m.id}>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPostDraft((cur) => ({ ...cur, assigneeId: m.id }));
-                                setIsAssignDropdownOpen(false);
-                              }}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "10px",
-                                width: "100%",
-                                padding: "8px 10px",
-                                background: postDraft.assigneeId === m.id ? "var(--bg-elevated)" : "transparent",
-                                border: "none",
-                                borderRadius: "6px",
-                                cursor: "pointer",
-                                textAlign: "left",
-                                transition: "background 0.15s ease"
-                              }}
-                              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-elevated)")}
-                              onMouseLeave={(e) => {
-                                if (postDraft.assigneeId !== m.id) e.currentTarget.style.background = "transparent";
-                              }}
-                            >
-                              <Avatar member={m} size={28} index={i} />
-                              <span style={{ 
-                                fontWeight: postDraft.assigneeId === m.id ? 700 : 500, 
-                                fontSize: "0.85rem", 
-                                color: postDraft.assigneeId === m.id ? "var(--text-primary)" : "var(--text-secondary)" 
-                              }}>
-                                {m.name}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-                </div>
+              <Field label="3ayyen lpost l">
+                <TeamMemberPicker
+                  value={postDraft.assigneeId}
+                  onChange={(assigneeId) =>
+                    setPostDraft((current) => ({ ...current, assigneeId }))
+                  }
+                  fallbackToAdmin={false}
+                  menuPlacement="top"
+                  ariaLabel="3ayyen lpost l"
+                  placeholder="Khtar li ghaykhdem 3la lpost"
+                  team={team}
+                />
               </Field>
               {postError && (
                 <div style={{ background: "rgba(255,69,0,0.1)", border: "1px solid rgba(255,69,0,0.3)", borderRadius: "8px", padding: "10px 14px" }}>
@@ -1782,7 +2020,7 @@ export default function Home() {
                   disabled={isSubmittingPost}
                   className="btn-ghost"
                 >
-                  Cancel
+                  Btel
                 </button>
                 <button
                   type="submit"
@@ -1790,7 +2028,7 @@ export default function Home() {
                   className="btn-primary"
                   style={{ minWidth: "112px" }}
                 >
-                  {isSubmittingPost ? "Saving..." : "Assign"}
+                  {isSubmittingPost ? "Kayt7afed..." : "3ayyen"}
                 </button>
               </div>
             </form>
@@ -1841,10 +2079,10 @@ export default function Home() {
             >
               <div>
                 <h2 id="create-comment-title" style={{ fontWeight: 900, fontSize: "1.1rem" }}>
-                  Add comment assignment
+                  Zid ta3yin dyal ta3li9
                 </h2>
                 <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "3px" }}>
-                  Choose an existing post, write the comment, and assign it to a team member.
+                  Khtar post kayn, ktob tta3li9, w 3ayyenha lchi wa7ed mn team.
                 </p>
               </div>
               <button
@@ -1853,7 +2091,7 @@ export default function Home() {
                 disabled={isSubmittingComment}
                 className="btn-ghost"
                 style={{ width: "34px", height: "34px", padding: 0, borderRadius: "50%" }}
-                aria-label="Close add comment"
+                aria-label="Sedd zid tta3li9"
               >
                 ×
               </button>
@@ -1862,7 +2100,7 @@ export default function Home() {
               onSubmit={handleGlobalCreateComment}
               style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}
             >
-              <Field label="Choose Reddit post">
+              <Field label="Khtar lpost dyal Reddit">
                 <div ref={postDropdownRef} style={{ position: "relative" }}>
                   {/* Custom Toggle Button */}
                   <button
@@ -1883,7 +2121,7 @@ export default function Home() {
                   >
                     {(() => {
                       const selectedPost = posts.find(p => p.id === commentModalDraft.postId);
-                      if (!selectedPost) return <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Select a post...</span>;
+                      if (!selectedPost) return <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Khtar lpost...</span>;
                       const postAssignee = team.find(m => m.id === selectedPost.assigneeId) || team[0];
                       const postAssigneeIndex = team.findIndex(m => m.id === selectedPost.assigneeId);
                       return (
@@ -1891,7 +2129,7 @@ export default function Home() {
                           <Avatar member={postAssignee} size={24} index={postAssigneeIndex >= 0 ? postAssigneeIndex : 0} />
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <span style={{ fontWeight: 855, fontSize: "0.76rem", color: "var(--accent)", display: "block" }}>
-                              r/{getSubredditName(selectedPost.subredditUrl)}
+                              {getSubredditName(selectedPost.subredditUrl)}
                             </span>
                             <span style={{ fontWeight: 700, fontSize: "0.82rem", color: "var(--text-primary)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {selectedPost.title}
@@ -1927,7 +2165,7 @@ export default function Home() {
                       <div style={{ padding: "8px", borderBottom: "1px solid var(--border)" }}>
                         <input
                           type="text"
-                          placeholder="Search posts by title, subreddit or assignee..."
+                          placeholder="Qelleb f lposts b l3onwan, subreddit, wla li m3ayyen..."
                           value={postSearchQuery}
                           onChange={(e) => setPostSearchQuery(e.target.value)}
                           className="input"
@@ -1964,7 +2202,7 @@ export default function Home() {
                           if (filtered.length === 0) {
                             return (
                               <li style={{ padding: "12px", textAlign: "center", color: "var(--text-muted)", fontSize: "0.82rem", fontWeight: 700 }}>
-                                No matching posts found
+                                Ma l9ina 7ta post kaytsift
                               </li>
                             );
                           }
@@ -2011,7 +2249,7 @@ export default function Home() {
                                       color: isSelected ? "var(--accent)" : "var(--text-secondary)",
                                       display: "block"
                                     }}>
-                                      r/{getSubredditName(p.subredditUrl)}
+                                      {getSubredditName(p.subredditUrl)}
                                     </span>
                                     <span style={{
                                       fontWeight: isSelected ? 700 : 500,
@@ -2035,33 +2273,29 @@ export default function Home() {
                   )}
                 </div>
               </Field>
-              <Field label="Comment text">
+              <Field label="Nass dyal tta3li9">
                 <textarea
                   value={commentModalDraft.body}
                   onChange={(e) =>
                     setCommentModalDraft((cur) => ({ ...cur, body: e.target.value }))
                   }
-                  placeholder="Paste the comment text here"
+                  placeholder="Lsa9 nass dyal tta3li9 hna"
                   className="input"
                   style={{ minHeight: "120px", resize: "vertical" }}
                 />
               </Field>
-              <Field label="Assign comment to">
-                <select
+              <Field label="3ayyen tta3li9 l">
+                <TeamMemberPicker
                   value={commentModalDraft.assigneeId}
-                  onChange={(e) =>
-                    setCommentModalDraft((cur) => ({ ...cur, assigneeId: e.target.value }))
+                  onChange={(assigneeId) =>
+                    setCommentModalDraft((current) => ({ ...current, assigneeId }))
                   }
-                  className="input"
-                  style={{ height: "40px" }}
-                >
-                  <option value="">Select teammate...</option>
-                  {team.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
+                  fallbackToAdmin={false}
+                  height={40}
+                  ariaLabel="3ayyen tta3li9 l"
+                  placeholder="Khtar chi wa7ed mn team"
+                  team={team}
+                />
               </Field>
 
               <div style={{ display: "flex", alignItems: "center", gap: "8px", margin: "4px 0" }}>
@@ -2078,7 +2312,7 @@ export default function Home() {
                   htmlFor="comment-modal-ai-draft"
                   style={{ fontSize: "0.82rem", fontWeight: 700, cursor: "pointer", userSelect: "none" }}
                 >
-                  AI draft (shows badge and allows copy)
+                  Draft b AI (kayban badge w t9der tnssakh)
                 </label>
               </div>
 
@@ -2094,7 +2328,7 @@ export default function Home() {
                   disabled={isSubmittingComment}
                   className="btn-ghost"
                 >
-                  Cancel
+                  Btel
                 </button>
                 <button
                   type="submit"
@@ -2102,7 +2336,7 @@ export default function Home() {
                   className="btn-primary"
                   style={{ minWidth: "112px", background: "var(--blue)", color: "#fff" }}
                 >
-                  {isSubmittingComment ? "Saving..." : "Assign"}
+                  {isSubmittingComment ? "Kayt7afed..." : "3ayyen"}
                 </button>
               </div>
             </form>
@@ -2130,10 +2364,10 @@ export default function Home() {
           >
             <div>
               <h1 style={{ fontSize: "1.35rem", fontWeight: 900, lineHeight: 1.2 }}>
-                Assignment control
+                T7akkum f l&apos;maham
               </h1>
               <p style={{ color: "var(--text-muted)", fontSize: "0.82rem", marginTop: "4px" }}>
-                Scan active Reddit work, open one task, then assign the next step.
+                Chof lkhadma dyal Reddit li mazal, 7ell mahma, w 3ayyen lkhoutwa jaya.
               </p>
             </div>
             <div style={{ display: "flex", gap: "8px", flexWrap: "nowrap" }}>
@@ -2168,7 +2402,7 @@ export default function Home() {
                   e.currentTarget.style.boxShadow = "none";
                 }}
               >
-                + New comment
+                +ta3li9 jdid
               </button>
               <button
                 type="button"
@@ -2179,7 +2413,7 @@ export default function Home() {
                 className="btn-primary"
                 style={{ padding: "10px 18px", borderRadius: "999px", whiteSpace: "nowrap" }}
               >
-                + New post
+                + post jdid
               </button>
             </div>
           </div>
@@ -2187,23 +2421,23 @@ export default function Home() {
             <MetricCard
               active={activeScope === "all" && activeStatus === "all"}
               accent="var(--accent)"
-              hint="Show every post"
-              label="Posts"
+              hint="Bayyen ga3 lposts"
+              label="Lposts"
               onClick={() => applyMetricFilter("posts")}
               value={stats.posts}
             />
             <MetricCard
               active={activeScope === "with-comments"}
               accent="var(--indigo)"
-              hint={`${stats.withComments} posts have comments`}
-              label="Comments"
+              hint={`${stats.withComments} lposts fihom ta3ali9`}
+              label="Ta3ali9"
               onClick={() => applyMetricFilter("comments")}
               value={stats.comments}
             />
             <MetricCard
               active={activeStatus === "queued"}
               accent="var(--yellow)"
-              hint="Waiting work"
+              hint="Khdma katsna"
               label="mazal"
               onClick={() => applyMetricFilter("queued")}
               value={stats.queued}
@@ -2211,8 +2445,8 @@ export default function Home() {
             <MetricCard
               active={activeStatus === "done"}
               accent="var(--green)"
-              hint="Finished work"
-              label="Done"
+              hint="Khdma salat"
+              label="Salat"
               onClick={() => applyMetricFilter("done")}
               value={stats.done}
             />
@@ -2246,7 +2480,7 @@ export default function Home() {
           }}
         >
           <div>
-            <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>Assignment queue</h2>
+            <h2 style={{ fontWeight: 800, fontSize: "1rem" }}>L9aima dyal tta3yin</h2>
             <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginTop: "2px" }}>
               {filterSummaryText}
             </p>
@@ -2262,7 +2496,7 @@ export default function Home() {
               fontWeight: 800,
             }}
           >
-            {filteredPosts.length} shown - {sortLabels[sortMode]}
+            {filteredPosts.length} baynin - {sortLabels[sortMode]}
           </span>
         </div>
 
@@ -2324,7 +2558,7 @@ export default function Home() {
                   isAiDraft: false,
                 };
                 return (
-                  <PostCard key={post.id} post={post} team={team} currentUser={currentUser!} onDeleteTask={deleteTask} onDeletePost={deletePost}
+                  <PostCard key={post.id} post={post} team={team} onDeleteComment={deleteComment} onDeletePost={deletePost}
                     commentDraft={draft}
                     commentDrafts={commentDrafts}
                     openReplyComposerIds={openReplyComposerIds}

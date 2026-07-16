@@ -6,9 +6,10 @@ import { Avatar, TopNav } from "@/components/reddit/task-components";
 import { loadRedditPosts } from "@/lib/db/posts";
 import { loadTeamMembers } from "@/lib/db/team";
 import { supabase } from "@/lib/supabase";
-import { getSubredditName, timeAgo, getMemberName } from "@/lib/helpers";
+import { getSubredditName, timeAgo, getMemberName, statusLabels } from "@/lib/helpers";
 import type { ActivityLogItem, RedditPost, Status, TeamMember } from "@/lib/types";
 
+// Keep dashboard copy aligned with the Moroccan Darija used on the main task screen.
 const SESSION_KEY = "reddit-assignment-session-v2";
 
 type HistoryItem = {
@@ -190,10 +191,10 @@ export default function HomeAnalytics() {
       // Memory-derived activity list (copied from main page fallback activity log layout)
       const items: ActivityLogItem[] = [];
       const closedActionLabels: Partial<Record<Status, string>> = {
-        done: "completed",
-        rejected: "reported rejected",
-        removed: "reported removed",
-        cancelled: "cancelled",
+        done: "kmml",
+        rejected: "rfd",
+        removed: "t7yd",
+        cancelled: "lgha",
       };
 
       posts.forEach((post) => {
@@ -206,7 +207,7 @@ export default function HomeAnalytics() {
           id: `post-assigned-${post.id}`,
           actorId: postActorId,
           actorName: postAssignee,
-          action: post.status === "working" ? "started a post task" : "was assigned a post task",
+          action: post.status === "working" ? "bda mahma dyal lpost" : "t3ayyen lih mahma dyal lpost",
           createdAt: postTime,
           detail: post.title,
           kind: "post",
@@ -234,7 +235,7 @@ export default function HomeAnalytics() {
             id: `post-status-${post.id}-${post.status}`,
             actorId,
             actorName: getMemberName(team, actorId),
-            action: `${closedActionLabels[post.status] ?? "updated"} a post task`,
+            action: `${closedActionLabels[post.status] ?? "bddl"} mahma dyal lpost`,
             createdAt: post.deletedAt ?? postTime,
             detail: post.title,
             kind: "post",
@@ -247,15 +248,13 @@ export default function HomeAnalytics() {
           const commentActorId = getActivityActorId(comment.assigneeId);
           const commentAssignee = getMemberName(team, commentActorId);
           const commentTime = comment.assignedAt ?? comment.createdAt;
-          const commentDetail = comment.body.length > 96
-            ? `${comment.body.slice(0, 96)}...`
-            : comment.body;
+          const commentDetail = post.title;
 
           items.push({
             id: `comment-assigned-${comment.id}`,
             actorId: commentActorId,
             actorName: commentAssignee,
-            action: comment.parentId ? "was assigned a reply task" : "was assigned a comment task",
+            action: comment.parentId ? "t3ayyen lih mahma dyal rradd" : "t3ayyen lih mahma dyal tta3li9",
             createdAt: commentTime,
             detail: commentDetail,
             kind: "comment",
@@ -268,7 +267,7 @@ export default function HomeAnalytics() {
               id: `comment-status-${comment.id}-${comment.status}`,
               actorId: commentActorId,
               actorName: commentAssignee,
-              action: `${closedActionLabels[comment.status] ?? "updated"} a comment task`,
+              action: `${closedActionLabels[comment.status] ?? "bddl"} mahma dyal tta3li9`,
               createdAt: commentTime,
               detail: commentDetail,
               kind: "comment",
@@ -305,50 +304,45 @@ export default function HomeAnalytics() {
 
           switch (row.event_type) {
             case "post_created":
-              actionLabel = "created a new post assignment";
+              actionLabel = "sawb ta3yin jdid dyal lpost";
               tone = "accent";
               break;
             case "post_status_changed":
-              actionLabel = `marked post status as ${row.new_status}`;
+              actionLabel = `bddl 7alat lpost l ${row.new_status ? statusLabels[row.new_status] : "ma3roufach"}`;
               tone = row.new_status === "done" ? "green" : "yellow";
               break;
             case "post_assignee_changed":
               const newAssignee = getMemberName(team, row.new_assignee_id || "");
-              actionLabel = `reassigned post task to ${newAssignee}`;
+              actionLabel = `3awed 3ayyen mahma dyal lpost l ${newAssignee}`;
               tone = "accent";
               break;
             case "post_soft_deleted":
-              actionLabel = "cancelled post task";
+              actionLabel = "lgha mahma dyal lpost";
               tone = "muted";
               break;
             case "comment_created":
-              actionLabel = "added a comment assignment";
+              actionLabel = "zid ta3yin dyal tta3li9";
               tone = "yellow";
               break;
             case "comment_status_changed":
-              actionLabel = `marked comment status as ${row.new_status}`;
+              actionLabel = `bddl 7alat tta3li9 l ${row.new_status ? statusLabels[row.new_status] : "ma3roufach"}`;
               tone = row.new_status === "done" ? "green" : "yellow";
               break;
             case "comment_assignee_changed":
               const newCommentAssignee = getMemberName(team, row.new_assignee_id || "");
-              actionLabel = `reassigned comment task to ${newCommentAssignee}`;
+              actionLabel = `3awed 3ayyen mahma dyal tta3li9 l ${newCommentAssignee}`;
               tone = "yellow";
               break;
             case "comment_posted_url_changed":
-              actionLabel = "pasted comment proof link";
+              actionLabel = "lsa9 link dyal ithbat tta3li9";
               tone = "green";
               break;
             default:
-              actionLabel = "updated task status";
+              actionLabel = "bddl 7alat lmahma";
               tone = "muted";
           }
 
-          let detailText = post?.title || "Reddit Post";
-          if (comment) {
-            detailText = comment.body.length > 96
-              ? `"${comment.body.slice(0, 96)}..."`
-              : `"${comment.body}"`;
-          }
+          const detailText = post?.title || "Post dyal Reddit";
 
           return {
             id: row.id,
@@ -383,7 +377,7 @@ export default function HomeAnalytics() {
             }}
           />
           <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", fontWeight: 700, textTransform: "uppercase" }}>
-            Loading dashboard metrics
+            Kayt7emlo l&apos;ihsa2iyat
           </p>
         </div>
       </main>
@@ -410,16 +404,28 @@ export default function HomeAnalytics() {
         }}
       >
         <div style={{ maxWidth: "1280px", margin: "0 auto", padding: "0 24px" }}>
-          <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", flexWrap: "wrap" }}>
+            <div>
             <span style={{ fontSize: "0.76rem", fontWeight: 850, color: "var(--accent)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Performance Desk
+              Maktab dyal l&apos;ada2
             </span>
             <h1 style={{ marginTop: "4px", fontSize: "1.45rem", fontWeight: 900, lineHeight: 1.2 }}>
-              Home Analytics
+              L&apos;ihsa2iyat
             </h1>
             <p style={{ color: "var(--text-muted)", fontSize: "0.84rem", marginTop: "5px" }}>
-              Detailed metrics, leaderboard listings, and recent desk events.
+              Ar9am mfassla, tartib dyal team, w akher tahdithat.
             </p>
+            </div>
+            {currentUser.isAdmin && (
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="btn-primary"
+                style={{ padding: "10px 16px", whiteSpace: "nowrap" }}
+              >
+                T7akkum f l&apos;maham
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -431,52 +437,52 @@ export default function HomeAnalytics() {
           {/* Stats Card */}
           <div className="glass-card" style={{ padding: "20px", display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: "128px" }}>
             <div>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Assignments</p>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Tta3yinat</p>
               <h3 style={{ fontSize: "1.8rem", fontWeight: 900, color: "var(--text-primary)", marginTop: "4px" }}>
                 {stats.totalTasks}
               </h3>
             </div>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.78rem", fontWeight: 600 }}>
-              {stats.totalPosts} posts • {stats.totalComments} comments
+              {stats.totalPosts} lposts • {stats.totalComments} ta3ali9
             </p>
           </div>
 
           {/* Completion Rate Card */}
           <div className="glass-card" style={{ padding: "20px", display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: "128px", borderLeft: "4px solid var(--green)" }}>
             <div>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Completion Rate</p>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Nisbat l&apos;ikmal</p>
               <h3 style={{ fontSize: "1.8rem", fontWeight: 900, color: "var(--green)", marginTop: "4px" }}>
                 {stats.completionRate}%
               </h3>
             </div>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.78rem", fontWeight: 600 }}>
-              {stats.totalCompleted} tasks completed successfully
+              {stats.totalCompleted} lmaham salaw
             </p>
           </div>
 
           {/* Queue Card */}
           <div className="glass-card" style={{ padding: "20px", display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: "128px", borderLeft: "4px solid var(--yellow)" }}>
             <div>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>mazal (Queued)</p>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Mazal</p>
               <h3 style={{ fontSize: "1.8rem", fontWeight: 900, color: "var(--yellow)", marginTop: "4px" }}>
                 {stats.queued}
               </h3>
             </div>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.78rem", fontWeight: 600 }}>
-              Pending task assignments
+              Tta3yinat mazal
             </p>
           </div>
 
           {/* Rejected/Closed Card */}
           <div className="glass-card" style={{ padding: "20px", display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: "128px", borderLeft: "4px solid var(--text-muted)" }}>
             <div>
-              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Closed / Cancelled</p>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.76rem", fontWeight: 800, textTransform: "uppercase" }}>Msddoud / Mlgiyin</p>
               <h3 style={{ fontSize: "1.8rem", fontWeight: 900, color: "var(--text-secondary)", marginTop: "4px" }}>
                 {stats.rejected + stats.removed + stats.cancelled}
               </h3>
             </div>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.78rem", fontWeight: 600 }}>
-              {stats.rejected} rejected • {stats.removed} removed • {stats.cancelled} cancelled
+              {stats.rejected} trfd • {stats.removed} t7ydat • {stats.cancelled} tlgat
             </p>
           </div>
         </div>
@@ -488,9 +494,9 @@ export default function HomeAnalytics() {
           <section>
             <div className="glass-card" style={{ overflow: "hidden" }}>
               <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
-                <h2 style={{ fontSize: "0.96rem", fontWeight: 850 }}>Teammate Leaderboard</h2>
+                <h2 style={{ fontSize: "0.96rem", fontWeight: 850 }}>Tartib team</h2>
                 <p style={{ color: "var(--text-muted)", fontSize: "0.74rem", fontWeight: 600, marginTop: "2px" }}>
-                  Ranked by finished task assignments.
+                  Mrattbin 7sab lmaham li salaw.
                 </p>
               </div>
 
@@ -530,10 +536,10 @@ export default function HomeAnalytics() {
                         <Avatar member={member} size={36} index={index} />
                         <div style={{ minWidth: 0 }}>
                           <h4 style={{ fontSize: "0.84rem", fontWeight: 850, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {member.name} {member.id === currentUser.id && <span style={{ fontSize: "0.72rem", color: "var(--accent)", fontWeight: 700 }}>(You)</span>}
+                            {member.name} {member.id === currentUser.id && <span style={{ fontSize: "0.72rem", color: "var(--accent)", fontWeight: 700 }}>(Nta)</span>}
                           </h4>
                           <span style={{ fontSize: "0.74rem", color: "var(--text-muted)", fontWeight: 700 }}>
-                            {member.totalPending} pending tasks
+                            {member.totalPending} lmaham mazal
                           </span>
                         </div>
                       </div>
@@ -542,7 +548,7 @@ export default function HomeAnalytics() {
                         <span style={{ fontSize: "1.15rem", fontWeight: 900, color: member.totalCompleted > 0 ? "var(--green)" : "var(--text-muted)" }}>
                           {member.totalCompleted}
                         </span>
-                        <p style={{ fontSize: "0.68rem", color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase" }}>Done</p>
+                        <p style={{ fontSize: "0.68rem", color: "var(--text-muted)", fontWeight: 800, textTransform: "uppercase" }}>Salat</p>
                       </div>
                     </div>
                   );
@@ -565,9 +571,9 @@ export default function HomeAnalytics() {
                 gap: "8px"
               }}>
                 <div>
-                  <h2 style={{ fontSize: "0.96rem", fontWeight: 850 }}>Recent Activity</h2>
+                  <h2 style={{ fontSize: "0.96rem", fontWeight: 850 }}>Akher tahdithat</h2>
                   <p style={{ color: "var(--text-muted)", fontSize: "0.74rem", fontWeight: 600, marginTop: "2px" }}>
-                    Chronological list of updates across the desk.
+                    L9aima mratba dyal tahdithat f tool dyal orchestration.
                   </p>
                 </div>
                 
@@ -582,14 +588,14 @@ export default function HomeAnalytics() {
                   color: historySource === "database" ? "var(--green)" : "var(--accent)",
                   border: `1px solid ${historySource === "database" ? "rgba(34,197,94,0.2)" : "rgba(255,69,0,0.2)"}`
                 }}>
-                  {historySource === "database" ? "Live DB Feed" : "Legacy DB Fallback"}
+                  {historySource === "database" ? "DB daba" : "Fallback l9dim"}
                 </span>
               </div>
 
               <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "18px", maxHeight: "640px", overflowY: "auto" }}>
                 {activityList.length === 0 ? (
                   <p style={{ textAlign: "center", padding: "40px 0", color: "var(--text-muted)", fontSize: "0.82rem", fontWeight: 700 }}>
-                    No actions logged on this desk yet.
+                    Mazal ma tsjlat 7ta 7araka hna.
                   </p>
                 ) : (
                   activityList.map((item) => {
@@ -630,7 +636,8 @@ export default function HomeAnalytics() {
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap"
                           }}>
-                            {item.subreddit} • {item.detail}
+                            {item.kind === "comment" ? "Mahma dyal tta3li9 tabe3a lpost · " : `${item.subreddit} • `}
+                            {item.detail}
                           </p>
                         </div>
 

@@ -9,19 +9,20 @@ import type {
 } from "@/lib/types";
 import { STATUSES } from "@/lib/types";
 
+// UI copy uses Moroccan Darija in Latin transliteration; keep task wording consistent.
 export const statusLabels: Record<Status, string> = {
   queued: "mazal",
-  working: "Working",
-  done: "Done",
-  rejected: "Rejected",
-  removed: "Removed",
-  cancelled: "Cancelled",
+  working: "khddam 3liha",
+  done: "salat",
+  rejected: "trfd",
+  removed: "t7ydat",
+  cancelled: "tlgat",
 };
 
 export const sortLabels: Record<SortMode, string> = {
-  newest: "Newest first",
-  oldest: "Oldest first",
-  assignee: "By assignee",
+  newest: "ljdid louwel",
+  oldest: "l9dim louwel",
+  assignee: "7sab l'm3ayyen",
 };
 
 const AVATAR_COLORS = [
@@ -83,12 +84,12 @@ export function getStatusGlowClass(status: Status) {
 }
 
 export function getMemberName(team: TeamMember[], id: string) {
-  return team.find((m) => m.id === id)?.name ?? "Unassigned";
+  return team.find((m) => m.id === id)?.name ?? team.find((m) => m.isAdmin)?.name ?? team[0]?.name ?? "Makhass 7ed";
 }
 
 export function getAssigneeList(team: TeamMember[], ids: string[]) {
   const unique = Array.from(new Set(ids)).filter(Boolean);
-  if (unique.length === 0) return "No one assigned yet";
+  if (unique.length === 0) return "Mazal ma t3ayyen 7ed";
   return unique.map((id) => getMemberName(team, id)).join(", ");
 }
 
@@ -132,29 +133,24 @@ export function getSubredditName(url: string) {
 
 export function timeAgo(value: string, now = new Date()) {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "just now";
+  if (Number.isNaN(date.getTime())) return "daba";
 
   const seconds = Math.round((date.getTime() - now.getTime()) / 1000);
   const absoluteSeconds = Math.abs(seconds);
-  if (absoluteSeconds < 45) return "just now";
+  if (absoluteSeconds < 45) return "daba";
 
-  const ranges: Array<[limit: number, divisor: number, unit: Intl.RelativeTimeFormatUnit]> = [
-    [90, 60, "minute"],
-    [45 * 60, 60, "minute"],
-    [90 * 60, 60 * 60, "hour"],
-    [22 * 60 * 60, 60 * 60, "hour"],
-    [36 * 60 * 60, 24 * 60 * 60, "day"],
-    [25 * 24 * 60 * 60, 24 * 60 * 60, "day"],
-    [45 * 24 * 60 * 60, 30 * 24 * 60 * 60, "month"],
-    [345 * 24 * 60 * 60, 30 * 24 * 60 * 60, "month"],
-    [545 * 24 * 60 * 60, 365 * 24 * 60 * 60, "year"],
-    [Infinity, 365 * 24 * 60 * 60, "year"],
+  const ranges: Array<[limit: number, divisor: number, unit: string]> = [
+    [45 * 60, 60, "d9i9a"],
+    [22 * 60 * 60, 60 * 60, "sa3a"],
+    [25 * 24 * 60 * 60, 24 * 60 * 60, "nhar"],
+    [345 * 24 * 60 * 60, 30 * 24 * 60 * 60, "chhar"],
+    [Infinity, 365 * 24 * 60 * 60, "3am"],
   ];
   const [, divisor, unit] =
     ranges.find(([limit]) => absoluteSeconds < limit) ?? ranges[ranges.length - 1];
-  const relativeValue = Math.round(seconds / divisor);
+  const relativeValue = Math.round(absoluteSeconds / divisor);
 
-  return new Intl.RelativeTimeFormat("en", { numeric: "auto" }).format(relativeValue, unit);
+  return seconds > 0 ? `ba9i ${relativeValue} ${unit}` : `mn ${relativeValue} ${unit}`;
 }
 
 export function getCommentDraftKey(postId: string, parentId?: string | null) {
@@ -189,8 +185,8 @@ export function initials(name: string) {
 }
 
 export function getAvatarUrl(slug: string): string | null {
-  if (slug === 'mehdi') return '/mehdi-admin.jpeg';
-  const knownSlugs = ['abdo', 'janah', 'jebbar', 'walid', 'yassine'];
+  if (slug === "mehdi") return "/mehdi-admin.jpeg";
+  const knownSlugs = ["abdo", "amine", "janah", "jebbar", "walid", "yassine"];
   if (knownSlugs.includes(slug)) return `/${slug}.jpeg`;
   return null;
 }

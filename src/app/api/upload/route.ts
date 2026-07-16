@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     const file: File | null = data.get("file") as unknown as File;
 
     if (!file) {
-      return NextResponse.json({ success: false, error: "No file provided" }, { status: 400 });
+      return NextResponse.json({ success: false, error: "Ma t3tatch lfile" }, { status: 400 });
     }
 
     const bytes = await file.arrayBuffer();
@@ -36,6 +36,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, url: `/uploads/${filename}` });
   } catch (error) {
     console.error("Upload error:", error);
-    return NextResponse.json({ success: false, error: "Upload failed" }, { status: 500 });
+    return NextResponse.json({ success: false, error: "Ma naj7ch tla3 lfile" }, { status: 500 });
   }
 }

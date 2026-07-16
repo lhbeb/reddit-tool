@@ -7,9 +7,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Metadata follows the same Moroccan Darija, Latin-transliteration UI language as the app.
 export const metadata: Metadata = {
-  title: "Reddit Assignment Desk",
-  description: "Assign Reddit posts, titles, subreddit links, and comments to your team — fast.",
+  title: "Tool dyal orchestration",
+  description: "3ayyen lposts, l3nawin, links, w ta3ali9 dyal Reddit lfar9tk bser3a.",
   icons: {
     icon: "/icon.svg",
     shortcut: "/icon.svg",
@@ -24,7 +25,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="ary"
       className={`${geistMono.variable} h-full`}
     >
       <body className="min-h-full flex flex-col" suppressHydrationWarning>

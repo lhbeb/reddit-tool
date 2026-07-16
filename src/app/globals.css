@@ -251,6 +251,32 @@ a { color: inherit; }
 .status-glow-closed  { border-left: 3px solid var(--text-muted); }
 
 @media (max-width: 760px) {
+  .top-nav {
+    padding: 0 12px !important;
+    gap: 8px !important;
+  }
+
+  .top-nav-identity {
+    gap: 8px !important;
+  }
+
+  .top-nav-user {
+    padding: 4px !important;
+  }
+
+  .top-nav-user-name,
+  .top-nav-search {
+    display: none;
+  }
+
+  .top-nav-actions {
+    gap: 6px !important;
+  }
+
+  .top-nav-logout {
+    padding: 6px 8px !important;
+  }
+
   .comment-composer {
     --comment-composer-grid: 1fr;
   }
